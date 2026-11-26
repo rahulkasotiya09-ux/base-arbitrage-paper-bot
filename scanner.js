@@ -89,15 +89,22 @@ async function main() {
               if (net >= BigInt(cfg.minProfitBaseUnits)) {
                 rows.push({
                   block, base: amounts.token, intermediate: midName, amountIn: amountText,
-                  buyVenue: buy.name, buyFee, sellVenue: sell.name, sellFee,\n                  buyRouter: buy.type === "v2" ? buy.router : null,\n                  sellRouter: sell.type === "v2" ? sell.router : null,\n                  executorCompatible: buy.type === "v2" && sell.type === "v2",
-                  intermediateOut: ethers.formatUnits(midOut, midToken.decimals),\n                  intermediateOutRaw: midOut.toString(),
-                  finalOut: ethers.formatUnits(baseOut, baseToken.decimals),\n                  finalOutRaw: baseOut.toString(),
+                  buyVenue: buy.name, buyFee, sellVenue: sell.name, sellFee,
+                  buyRouter: buy.type === "v2" ? buy.router : null,
+                  sellRouter: sell.type === "v2" ? sell.router : null,
+                  executorCompatible: buy.type === "v2" && sell.type === "v2",
+                  intermediateOut: ethers.formatUnits(midOut, midToken.decimals),
+                  intermediateOutRaw: midOut.toString(),
+                  finalOut: ethers.formatUnits(baseOut, baseToken.decimals),
+                  finalOutRaw: baseOut.toString(),
                   flashPremium: ethers.formatUnits(premium, baseToken.decimals),
                   grossProfit: ethers.formatUnits(gross, baseToken.decimals),
                   estimatedGasCost: gasCostBase === null ? "NOT CONVERTED - exclude from decision" : ethers.formatUnits(gasCostBase, baseToken.decimals),
                   estimatedNetProfit: gasCostBase === null ? "NOT COMPUTED - gas asset differs from borrowed asset" : ethers.formatUnits(net, baseToken.decimals),
                   gasPriceWei: gasPrice?.toString() ?? null,
-                  gasAdjusted: true,\n                  quoteBlock: block,\n                  note: "Indicative same-block quotes only; re-simulate immediately before execution. Gas estimate is conservative input, not actual receipt gas."
+                  gasAdjusted: true,
+                  quoteBlock: block,
+                  note: "Indicative same-block quotes only; re-simulate immediately before execution. Gas estimate is conservative input, not actual receipt gas."
                 });
               }
             }
@@ -107,17 +114,22 @@ async function main() {
     }
   }
   rows.sort((a,b) => {
-    if (a.estimatedNetProfit.startsWith("NOT")) return 1;
-    if (b.estimatedNetProfit.startsWith("NOT")) return -1;
-    return Number(b.estimatedNetProfit) - Number(a.estimatedNetProfit);
+    const av = ethers.parseUnits(a.estimatedNetProfit, cfg.tokens[a.base].decimals);
+    const bv = ethers.parseUnits(b.estimatedNetProfit, cfg.tokens[b.base].decimals);
+    return av === bv ? 0 : (av > bv ? -1 : 1);
   });
   const output = {chainId: cfg.chainId, block, checkedAt: new Date().toISOString(), candidates: rows};
   fs.writeFileSync("opportunities.json", JSON.stringify(output, null, 2));
   if (rows.length) {
     const top = rows.slice(0, 5).map(r =>
       `${r.base} ${r.amountIn} | ${r.buyVenue} -> ${r.sellVenue} | estimated net: ${r.estimatedNetProfit}`
-    ).join("\\n");
-    await notifyTelegram(`FlashArb scanner: ${rows.length} candidate(s) at block ${block}\\n\\n${top}\\n\\nQuotes are indicative only. NOT EXECUTABLE / NOT GUARANTEED.`);
+    ).join("\
+");
+    await notifyTelegram(`FlashArb scanner: ${rows.length} candidate(s) at block ${block}\
+\
+${top}\
+\
+Quotes are indicative only. NOT EXECUTABLE / NOT GUARANTEED.`);
   }
   console.log(`Scanned block ${block}. ${rows.length} candidate(s) written to opportunities.json`);
   for (const r of rows.slice(0, 20)) console.log(`${r.base} ${r.amountIn} | ${r.buyVenue} -> ${r.sellVenue} | net=${r.estimatedNetProfit}`);
