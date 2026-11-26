@@ -206,6 +206,7 @@ contract AaveV3FlashArb {
     }
 
     function withdrawToken(address token, address to) external onlyOwner whenIdle {
+        require(token != address(0), "ZERO_TOKEN");
         require(to != address(0), "ZERO_TO");
         uint256 bal = IERC20(token).balanceOf(address(this));
         (bool ok, bytes memory ret) = token.call(
