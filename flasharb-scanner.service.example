@@ -1,0 +1,17 @@
+[Unit]
+Description=FlashArb Read-only Opportunity Scanner
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/FlashArb_Scanner
+Environment=SCAN_INTERVAL_SECONDS=20
+ExecStart=/home/ubuntu/FlashArb_Scanner/run_forever.sh
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
