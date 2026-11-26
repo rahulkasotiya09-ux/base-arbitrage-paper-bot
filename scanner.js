@@ -32,7 +32,7 @@ async function quote(venue, tokenIn, tokenOut, amountIn, fee, blockTag) {
     const q = await v3.get(venue.name).quoteExactInputSingle.staticCall({
       tokenIn: tokenIn.address, tokenOut: tokenOut.address,
       amountIn, fee, sqrtPriceLimitX96: 0
-    });
+    }, { blockTag });
     return q.amountOut ?? q[0];
   } catch {
     return null; // no pool, insufficient liquidity, or unsupported fee tier
@@ -122,8 +122,8 @@ async function main() {
   if (rows.length) {
     const top = rows.slice(0, 5).map(r =>
       `${r.base} ${r.amountIn} | ${r.buyVenue} -> ${r.sellVenue} | estimated net: ${r.estimatedNetProfit}`
-    ).join("\\n");
-    await notifyTelegram(`FlashArb scanner: ${rows.length} candidate(s) at block ${block}\\n\\n${top}\\n\\nQuotes are indicative only. NOT EXECUTABLE / NOT GUARANTEED.`);
+    ).join("\n");
+    await notifyTelegram(`FlashArb scanner: ${rows.length} candidate(s) at block ${block}\n\n${top}\n\nQuotes are indicative only. NOT EXECUTABLE / NOT GUARANTEED.`);
   }
   console.log(`Scanned block ${block}. ${rows.length} candidate(s) written to opportunities.json`);
   for (const r of rows.slice(0, 20)) console.log(`${r.base} ${r.amountIn} | ${r.buyVenue} -> ${r.sellVenue} | net=${r.estimatedNetProfit}`);
