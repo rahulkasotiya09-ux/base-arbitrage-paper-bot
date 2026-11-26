@@ -63,7 +63,11 @@ async function main() {
     provider.getNetwork(), provider.getBlockNumber(), provider.getFeeData()
   ]);
   if (Number(network.chainId) !== cfg.chainId) throw new Error(`RPC chain mismatch: expected ${cfg.chainId}, got ${network.chainId}`);
-  const poolProvider = new ethers.Contract(AAVE_PROVIDER, AAVE_PROVIDER_ABI, provider);\n  const poolAddress = await poolProvider.getPool({ blockTag: block });\n  const pool = new ethers.Contract(poolAddress, AAVE_POOL_ABI, provider);\n  const premiumBps = BigInt(await pool.FLASHLOAN_PREMIUM_TOTAL({ blockTag: block }));\n  const rows = [];
+  const poolProvider = new ethers.Contract(AAVE_PROVIDER, AAVE_PROVIDER_ABI, provider);
+  const poolAddress = await poolProvider.getPool({ blockTag: block });
+  const pool = new ethers.Contract(poolAddress, AAVE_POOL_ABI, provider);
+  const premiumBps = BigInt(await pool.FLASHLOAN_PREMIUM_TOTAL({ blockTag: block }));
+  const rows = [];
   for (const [baseName, amounts] of cfg.scanAmounts.entries()) {
     const baseToken = cfg.tokens[amounts.token];
     if (!baseToken) continue;
