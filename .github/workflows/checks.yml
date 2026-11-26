@@ -1,0 +1,35 @@
+name: FlashArb checks
+
+on:
+  push:
+    branches: [main, "dev/**"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  static-and-contract-checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Install Node dependencies
+        run: npm install
+      - name: Check JavaScript syntax
+        run: npm run check
+      - uses: foundry-rs/foundry-toolchain@v1
+      - name: Install forge-std
+        run: forge install foundry-rs/forge-std --no-git
+      - name: Compile Solidity
+        run: forge build
+      - name: Run Ethereum fork tests when RPC secret is configured
+        if: ${{ secrets.RPC_URL != '' }}
+        env:
+          RPC_URL: ${{ secrets.RPC_URL }}
+        run: forge test --fork-url "$RPC_URL" -vvv
