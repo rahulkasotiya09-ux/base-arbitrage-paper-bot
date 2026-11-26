@@ -1,0 +1,28 @@
+FLASH ARBITRAGE CONTRACTS — HANDOFF NOTES
+
+Files
+- FlashArbMulti_Improved.sol: Aave V3 flashLoanSimple; each leg can use a V2-style router (fee=0) or Uniswap V3 SwapRouter02-style router (fee>0).
+- FlashArbBalancer_Improved.sol: Balancer Vault flash loans and V2-style routers only.
+
+Dependencies
+- Solidity compiler: 0.8.20 or compatible 0.8.x compiler.
+- OpenZeppelin Contracts 5.x (SafeERC20 / IERC20 imports). The SafeERC20 calls used here are compatible with current OZ 5.x; verify the exact package version in your build.
+
+Before use
+1. Compile with the exact router interfaces and dependency versions used by your project.
+2. Deploy only to a testnet or local mainnet fork first.
+3. Set approved routers individually using setRouter(). A router must have deployed code.
+4. Simulate every route and verify token decimals, pool liquidity, router ABI, fee tier, minIntermediateOut, minBaseOut, deadline and minProfit.
+5. Keep minProfit positive. It is denominated in the borrowed token and does NOT include transaction gas, builder/bribe payments, or off-chain costs.
+6. Run static analysis, unit tests, fuzz tests, invariant tests, and an independent audit before mainnet use.
+
+Important limitations
+- These contracts execute routes supplied by the owner; they do not scan markets or discover arbitrage opportunities.
+- They do not estimate or subtract gas costs. A successful on-chain profit check can still be a net loss after gas.
+- The Aave contract supports the V2 swapExactTokensForTokens ABI and the Uniswap V3 SwapRouter02 exactInputSingle ABI. Router compatibility must be verified per deployment.
+- The Balancer contract supports V2-style exact-input routers only.
+- Fee-on-transfer, rebasing, blacklistable, callback-enabled, and otherwise non-standard tokens are not guaranteed to work safely.
+- No contract can guarantee profitable execution; routes can revert due to state changes, competition, MEV, liquidity, or price movement.
+
+Security note
+These are engineering improvements, not an audit or a guarantee of safety. Do not fund with meaningful assets until the code has been compiled, tested on a fork, reviewed against the exact deployed protocol contracts, and independently audited.
