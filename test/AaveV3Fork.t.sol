@@ -12,10 +12,6 @@ interface IUniswapV2Pair {
     function sync() external;
 }
 
-interface IV2Router is IV2Router {
-    function factory() external pure returns (address);
-}
-
 contract AaveV3ForkTest is Test {
     // Aave V3 Ethereum Mainnet PoolAddressesProvider (official deployment).
     address constant ADDRESSES_PROVIDER = 0x2f39d218133AFaB8F2B819B1066c7E434Ad94E9e;
