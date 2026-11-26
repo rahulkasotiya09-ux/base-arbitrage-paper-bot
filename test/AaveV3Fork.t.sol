@@ -6,7 +6,10 @@ import "../src/AaveV3FlashArb.sol";
 
 contract AaveV3ForkTest is Test {
     // Aave V3 Ethereum Mainnet PoolAddressesProvider (official deployment).
-    address constant ADDRESSES_PROVIDER = 0x2f39d218133AFaB8F2B819B1066c7E434Ad94E9e;\n    address constant WETH = 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2;\n    address constant USDC = 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48;\n    address constant UNISWAP_V2_ROUTER = 0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D;
+    address constant ADDRESSES_PROVIDER = 0x2f39d218133AFaB8F2B819B1066c7E434Ad94E9e;
+    address constant WETH = 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2;
+    address constant USDC = 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48;
+    address constant UNISWAP_V2_ROUTER = 0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D;
 
     function testForkResolvesLiveAavePoolAndPremium() public {
         vm.createSelectFork(vm.envString("RPC_URL"));
