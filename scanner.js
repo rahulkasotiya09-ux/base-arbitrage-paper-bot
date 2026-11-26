@@ -23,10 +23,10 @@ const tokenEntries = Object.entries(cfg.tokens);
 const fmt = (n, d) => Number(ethers.formatUnits(n, d));
 const parse = (n, d) => ethers.parseUnits(String(n), d);
 
-async function quote(venue, tokenIn, tokenOut, amountIn, fee) {
+async function quote(venue, tokenIn, tokenOut, amountIn, fee, blockTag) {
   try {
     if (venue.type === "v2") {
-      const amounts = await v2.get(venue.name).getAmountsOut(amountIn, [tokenIn.address, tokenOut.address]);
+      const amounts = await v2.get(venue.name).getAmountsOut(amountIn, [tokenIn.address, tokenOut.address], { blockTag });
       return amounts[1];
     }
     const q = await v3.get(venue.name).quoteExactInputSingle.staticCall({
@@ -72,10 +72,10 @@ async function main() {
         for (const buy of cfg.venues) for (const sell of cfg.venues) {
           if (buy.name === sell.name) continue;
           for (const buyFee of feeOptions(buy)) {
-            const midOut = await quote(buy, baseToken, midToken, amountIn, buyFee);
+            const midOut = await quote(buy, baseToken, midToken, amountIn, buyFee, block);
             if (midOut === null || midOut === 0n) continue;
             for (const sellFee of feeOptions(sell)) {
-              const baseOut = await quote(sell, midToken, baseToken, midOut, sellFee);
+              const baseOut = await quote(sell, midToken, baseToken, midOut, sellFee, block);
               if (baseOut === null) continue;
               const premium = amountIn * BigInt(cfg.flashLoanPremiumBps) / 10000n;
               const gross = baseOut - amountIn - premium;
@@ -97,7 +97,7 @@ async function main() {
                   estimatedGasCost: gasCostBase === null ? "NOT CONVERTED - exclude from decision" : ethers.formatUnits(gasCostBase, baseToken.decimals),
                   estimatedNetProfit: gasCostBase === null ? "NOT COMPUTED - gas asset differs from borrowed asset" : ethers.formatUnits(net, baseToken.decimals),
                   gasPriceWei: gasPrice?.toString() ?? null,
-                  note: "Indicative quotes only; not an executable or guaranteed opportunity."
+                  gasAdjusted: true,\n                  quoteBlock: block,\n                  note: "Indicative same-block quotes only; re-simulate immediately before execution. Gas estimate is conservative input, not actual receipt gas."
                 });
               }
             }
