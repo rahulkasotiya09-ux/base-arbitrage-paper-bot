@@ -11,7 +11,7 @@ const V2_ABI = ["function getAmountsOut(uint amountIn,address[] calldata path) v
 const V3_QUOTER_ABI = [
   "function quoteExactInputSingle((address tokenIn,address tokenOut,uint256 amountIn,uint24 fee,uint160 sqrtPriceLimitX96) params) returns (uint256 amountOut,uint160,uint32,uint256)"
 ];
-const erc20Abi = ["function decimals() view returns (uint8)", "function symbol() view returns (string)"];
+const AAVE_PROVIDER_ABI = ["function getPool() view returns (address)"];\nconst AAVE_POOL_ABI = ["function FLASHLOAN_PREMIUM_TOTAL() view returns (uint128)"];\nconst AAVE_PROVIDER = cfg.aaveAddressesProvider;
 
 const v2 = new Map();
 const v3 = new Map();
@@ -61,7 +61,7 @@ async function main() {
     provider.getNetwork(), provider.getBlockNumber(), provider.getFeeData()
   ]);
   if (Number(network.chainId) !== cfg.chainId) throw new Error(`RPC chain mismatch: expected ${cfg.chainId}, got ${network.chainId}`);
-  const rows = [];
+  const poolProvider = new ethers.Contract(AAVE_PROVIDER, AAVE_PROVIDER_ABI, provider);\n  const poolAddress = await poolProvider.getPool({ blockTag: block });\n  const pool = new ethers.Contract(poolAddress, AAVE_POOL_ABI, provider);\n  const premiumBps = BigInt(await pool.FLASHLOAN_PREMIUM_TOTAL({ blockTag: block }));\n  const rows = [];
   for (const [baseName, amounts] of cfg.scanAmounts.entries()) {
     const baseToken = cfg.tokens[amounts.token];
     if (!baseToken) continue;
@@ -77,7 +77,7 @@ async function main() {
             for (const sellFee of feeOptions(sell)) {
               const baseOut = await quote(sell, midToken, baseToken, midOut, sellFee, block);
               if (baseOut === null) continue;
-              const premium = amountIn * BigInt(cfg.flashLoanPremiumBps) / 10000n;
+              const premium = amountIn * premiumBps / 10000n;
               const gross = baseOut - amountIn - premium;
               const gasPrice = feeData.maxFeePerGas ?? feeData.gasPrice;
               // ETH gas is directly denominated in the borrowed asset only for WETH routes.
@@ -96,7 +96,7 @@ async function main() {
                   intermediateOutRaw: midOut.toString(),
                   finalOut: ethers.formatUnits(baseOut, baseToken.decimals),
                   finalOutRaw: baseOut.toString(),
-                  flashPremium: ethers.formatUnits(premium, baseToken.decimals),
+                  flashPremium: ethers.formatUnits(premium, baseToken.decimals),\n                  flashLoanPremiumBps: premiumBps.toString(),
                   grossProfit: ethers.formatUnits(gross, baseToken.decimals),
                   estimatedGasCost: gasCostBase === null ? "NOT CONVERTED - exclude from decision" : ethers.formatUnits(gasCostBase, baseToken.decimals),
                   estimatedNetProfit: gasCostBase === null ? "NOT COMPUTED - gas asset differs from borrowed asset" : ethers.formatUnits(net, baseToken.decimals),
