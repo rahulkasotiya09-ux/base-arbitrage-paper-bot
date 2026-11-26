@@ -36,7 +36,7 @@ forge build
 RPC_URL="https://YOUR_MAINNET_RPC" forge test --fork-url "$RPC_URL" -vvv
 ```
 
-Fork tests check that the configured Aave V3 Ethereum Pool resolves, that the receiver uses that Pool, owner checks work, and an intentionally losing same-router WETH/USDC round trip is rejected. Fork tests require a mainnet RPC URL and are not run in CI unless the repository secret `RPC_URL` is configured.
+Fork tests check that the configured Aave V3 Ethereum Pool resolves, that the receiver uses that Pool, owner checks work, and an intentionally losing same-router WETH/USDC round trip is rejected. They also include a successful end-to-end case: the test forks Ethereum mainnet, uses the real Aave Pool, real WETH/USDC pair contracts and real Uniswap V2 + Sushi V2 routers, then deliberately adjusts the two pair reserves inside the disposable fork to create a known price spread. It executes the actual flash loan, both swaps, Aave premium repayment, and checks that the receiver retains the configured profit after a conservative gas reserve. This proves the contract flow can complete against the real protocol/router contracts under controlled fork conditions; it does NOT prove that a naturally occurring profitable spread currently exists in the live market. Fork tests require a mainnet RPC URL and are not run in CI unless the repository secret `RPC_URL` is configured.
 
 ## Deployment and configuration (manual; not performed by this bot)
 
@@ -85,6 +85,7 @@ See `.env.example`. Keep secrets local or in GitHub Actions Secrets. Never paste
 ## Current limitations before real-money use
 
 - No audited security review; this code is experimental.
+- The successful fork test intentionally changes pair reserves in the local fork to manufacture a price spread; it is an integration test, not evidence of a live arbitrage opportunity.
 - No live deployment has been made.
 - The contract supports two V2-style swaps only; it does not execute Uniswap V3 routes.
 - The executor currently uses scanner snapshots as route hints and relies on on-chain simulation plus strict minimum outputs to reject stale or unprofitable trades.
