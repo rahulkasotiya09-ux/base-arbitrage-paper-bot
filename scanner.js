@@ -79,13 +79,12 @@ async function main() {
               if (baseOut === null) continue;
               const premium = amountIn * BigInt(cfg.flashLoanPremiumBps) / 10000n;
               const gross = baseOut - amountIn - premium;
-              let gasCostBase = null;
-              let net = gross;
               const gasPrice = feeData.maxFeePerGas ?? feeData.gasPrice;
-              if (baseToken.address.toLowerCase() === cfg.wrappedNative.toLowerCase() && gasPrice) {
-                gasCostBase = BigInt(cfg.gasLimitEstimate) * gasPrice;
-                net = gross - gasCostBase;
-              }
+              // ETH gas is directly denominated in the borrowed asset only for WETH routes.
+              // Exclude other borrowed assets until a reliable gas-to-token conversion is implemented.
+              if (baseToken.address.toLowerCase() !== cfg.wrappedNative.toLowerCase() || !gasPrice) continue;
+              const gasCostBase = BigInt(cfg.gasLimitEstimate) * gasPrice;
+              const net = gross - gasCostBase;
               if (net >= BigInt(cfg.minProfitBaseUnits)) {
                 rows.push({
                   block, base: amounts.token, intermediate: midName, amountIn: amountText,
@@ -123,13 +122,8 @@ async function main() {
   if (rows.length) {
     const top = rows.slice(0, 5).map(r =>
       `${r.base} ${r.amountIn} | ${r.buyVenue} -> ${r.sellVenue} | estimated net: ${r.estimatedNetProfit}`
-    ).join("\
-");
-    await notifyTelegram(`FlashArb scanner: ${rows.length} candidate(s) at block ${block}\
-\
-${top}\
-\
-Quotes are indicative only. NOT EXECUTABLE / NOT GUARANTEED.`);
+    ).join("\\n");
+    await notifyTelegram(`FlashArb scanner: ${rows.length} candidate(s) at block ${block}\\n\\n${top}\\n\\nQuotes are indicative only. NOT EXECUTABLE / NOT GUARANTEED.`);
   }
   console.log(`Scanned block ${block}. ${rows.length} candidate(s) written to opportunities.json`);
   for (const r of rows.slice(0, 20)) console.log(`${r.base} ${r.amountIn} | ${r.buyVenue} -> ${r.sellVenue} | net=${r.estimatedNetProfit}`);
