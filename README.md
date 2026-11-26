@@ -2,7 +2,7 @@
 
 This repository now contains three separate pieces:
 
-1. `scanner.js`: read-only same-block DEX quote scanner. It only labels WETH-denominated routes as candidates because native ETH gas can be directly reserved in WETH units.
+1. `scanner.js`: read-only same-block DEX quote scanner. It reads Aave's live flash-loan premium from the Pool at the scan block and only labels WETH-denominated routes as candidates because native ETH gas can be directly reserved in WETH units.
 2. `src/AaveV3FlashArb.sol`: owner-operated Aave V3 `flashLoanSimple` receiver. It performs two allowlisted Uniswap-V2-compatible swaps, approves Aave for principal + the premium returned by Aave, and reverts unless the borrowed-asset balance covers repayment, the caller's conservative gas reserve, and the minimum desired profit.
 3. `executor.js`: reads the scanner output, selects a V2/V2 WETH candidate, estimates gas, reserves gas in WETH, then simulates the complete transaction with `eth_call`. It does not broadcast by default.
 
