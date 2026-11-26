@@ -89,9 +89,9 @@ async function main() {
               if (net >= BigInt(cfg.minProfitBaseUnits)) {
                 rows.push({
                   block, base: amounts.token, intermediate: midName, amountIn: amountText,
-                  buyVenue: buy.name, buyFee, sellVenue: sell.name, sellFee,
-                  intermediateOut: ethers.formatUnits(midOut, midToken.decimals),
-                  finalOut: ethers.formatUnits(baseOut, baseToken.decimals),
+                  buyVenue: buy.name, buyFee, sellVenue: sell.name, sellFee,\n                  buyRouter: buy.type === "v2" ? buy.router : null,\n                  sellRouter: sell.type === "v2" ? sell.router : null,\n                  executorCompatible: buy.type === "v2" && sell.type === "v2",
+                  intermediateOut: ethers.formatUnits(midOut, midToken.decimals),\n                  intermediateOutRaw: midOut.toString(),
+                  finalOut: ethers.formatUnits(baseOut, baseToken.decimals),\n                  finalOutRaw: baseOut.toString(),
                   flashPremium: ethers.formatUnits(premium, baseToken.decimals),
                   grossProfit: ethers.formatUnits(gross, baseToken.decimals),
                   estimatedGasCost: gasCostBase === null ? "NOT CONVERTED - exclude from decision" : ethers.formatUnits(gasCostBase, baseToken.decimals),
