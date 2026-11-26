@@ -28,6 +28,29 @@ contract AaveV3ForkTest is Test {
         assertEq(receiver.owner(), address(this));
     }
 
+    function testForkRejectsLosingFlashLoanRoundTrip() public {
+        vm.createSelectFork(vm.envString("RPC_URL"));
+        AaveV3FlashArb receiver = new AaveV3FlashArb(ADDRESSES_PROVIDER);
+        receiver.setToken(WETH, true);
+        receiver.setToken(USDC, true);
+        receiver.setRouter(UNISWAP_V2_ROUTER, true);
+
+        AaveV3FlashArb.Route memory route = AaveV3FlashArb.Route({
+            intermediateToken: USDC,
+            buyRouter: UNISWAP_V2_ROUTER,
+            sellRouter: UNISWAP_V2_ROUTER,
+            minIntermediateOut: 1,
+            minFinalOut: 1,
+            gasCostInAsset: 0,
+            minProfit: 0,
+            deadline: block.timestamp + 60
+        });
+
+        // A round trip through the same AMM pays trading fees twice and must revert.
+        vm.expectRevert(bytes("NOT_PROFITABLE"));
+        receiver.start(WETH, 0.01 ether, route);
+    }
+
     function testOnlyOwnerCanConfigure() public {
         vm.createSelectFork(vm.envString("RPC_URL"));
         AaveV3FlashArb receiver = new AaveV3FlashArb(ADDRESSES_PROVIDER);
