@@ -14,6 +14,8 @@ jobs:
   static-and-contract-checks:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    env:
+      HAS_RPC: ${{ secrets.RPC_URL != '' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -29,7 +31,7 @@ jobs:
       - name: Compile Solidity
         run: forge build
       - name: Run Ethereum fork tests when RPC secret is configured
-        if: ${{ secrets.RPC_URL != '' }}
+        if: ${{ env.HAS_RPC == 'true' }}
         env:
           RPC_URL: ${{ secrets.RPC_URL }}
         run: forge test --fork-url "$RPC_URL" -vvv
