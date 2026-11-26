@@ -1,10 +1,13 @@
 {
-  "name": "flasharb-opportunity-scanner",
-  "version": "1.0.0",
+  "name": "aave-v3-flasharb",
+  "version": "1.1.0",
   "private": true,
   "type": "module",
   "scripts": {
-    "scan": "node scanner.js"
+    "scan": "node scanner.js",
+    "simulate": "node executor.js",
+    "executor": "node executor.js",
+    "check": "node --check scanner.js && node --check executor.js"
   },
   "dependencies": {
     "dotenv": "^16.4.7",
