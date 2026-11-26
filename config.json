@@ -1,7 +1,6 @@
 {
   "chainId": 1,
   "wrappedNative": "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
-  "flashLoanPremiumBps": 9,
   "gasLimitEstimate": 650000,
   "minProfitBaseUnits": "1000000000000000",
   "maxQuoteAgeBlocks": 2,
@@ -71,5 +70,6 @@
         10000
       ]
     }
-  ]
+  ],
+  "aaveAddressesProvider": "0x2f39d218133AFaB8F2B819B1066c7E434Ad94E9e"
 }
