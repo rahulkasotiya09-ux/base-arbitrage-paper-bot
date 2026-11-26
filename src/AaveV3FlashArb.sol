@@ -55,7 +55,8 @@ contract AaveV3FlashArb {
         address sellRouter;
         uint256 minIntermediateOut;
         uint256 minFinalOut;
-        uint256 minProfit; // loan-asset units; excludes EOA transaction gas
+        uint256 gasCostInAsset; // caller's conservative gas estimate converted to borrowed-asset units
+        uint256 minProfit; // desired profit after reserving gasCostInAsset
         uint256 deadline;
     }
 
@@ -155,7 +156,7 @@ contract AaveV3FlashArb {
         );
 
         uint256 owed = amount + premium;
-        uint256 requiredBalance = startingBalance + owed + r.minProfit;
+        uint256 requiredBalance = startingBalance + owed + r.gasCostInAsset + r.minProfit;
         uint256 finalBalance = IERC20(asset).balanceOf(address(this));
         require(finalBalance >= requiredBalance, "NOT_PROFITABLE");
 
@@ -163,7 +164,7 @@ contract AaveV3FlashArb {
 
         emit ArbitrageCompleted(
             asset, r.intermediateToken, amount, premium,
-            finalBalance - startingBalance - owed
+            finalBalance - startingBalance - owed - r.gasCostInAsset
         );
         return true;
     }
