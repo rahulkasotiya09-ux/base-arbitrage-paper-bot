@@ -4,6 +4,11 @@ on:
   schedule:
     - cron: "*/5 * * * *"
   workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/base-market-scan-5min.yml"
 
 permissions:
   contents: read
@@ -15,7 +20,7 @@ concurrency:
 jobs:
   scan:
     runs-on: ubuntu-latest
-    timeout-minutes: 4
+    timeout-minutes: 8
     steps:
       - uses: actions/checkout@v4
         with:
@@ -24,16 +29,17 @@ jobs:
         with:
           node-version: 20
       - name: Install dependencies
-        run: npm install
+        run: npm install --omit=dev --no-audit --no-fund
+      - name: Check scanner syntax
+        run: node --check scanner.js
       - name: Scan Base routes (read-only; no signing or transactions)
         env:
           RPC_URL: ${{ secrets.BASE_RPC_URL || 'https://mainnet.base.org' }}
         run: node scanner.js
       - name: Upload scan results
-        if: always()
+        if: always() && hashFiles('opportunities.json') != ''
         uses: actions/upload-artifact@v4
         with:
           name: base-market-scan-${{ github.run_id }}
           path: opportunities.json
-          if-no-files-found: warn
           retention-days: 7
