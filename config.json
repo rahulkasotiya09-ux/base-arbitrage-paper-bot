@@ -2,7 +2,9 @@
   "chainId": 8453,
   "wrappedNative": "0x4200000000000000000000000000000000000006",
   "gasLimitEstimate": 900000,
-  "minProfitBaseUnits": "1000000000000",
+  "minProfitUsdCents": 1,
+  "ethUsdFeed": "0x71041dddad3595F9CEd3DcCFBe3D1F4b0a16Bb70",
+  "maxEthUsdPriceAgeSeconds": 1800,
   "maxQuoteAgeBlocks": 1,
   "scanAmounts": [
     {
