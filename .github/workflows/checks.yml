@@ -23,6 +23,8 @@ jobs:
           node-version: 20
       - name: Install Node dependencies
         run: npm install
+      - name: Report production dependency audit
+        run: npm audit --omit=dev --json || true
       - name: Check JavaScript syntax
         run: npm run check && node --check base-mainnet-readonly-deploy-estimate.js
       - uses: foundry-rs/foundry-toolchain@v1
