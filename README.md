@@ -57,7 +57,34 @@ Then, from the contract owner wallet, allowlist only the exact assets and router
 
 The executor requires `EXECUTOR_ADDRESS` and `WALLET_PRIVATE_KEY` in a local `.env` file. Use a dedicated wallet with no unrelated assets. Never commit `.env`, private keys, seed phrases, or RPC secrets to GitHub.
 
-## Automated GitHub monitor (simulation-only)\n\n`.github/workflows/flasharb-bot.yml` is configured for manual runs and a five-minute schedule. Add `RPC_URL` as a repository Actions secret. Optionally add `EXECUTOR_ADDRESS` and `WALLET_PRIVATE_KEY` as Actions secrets to run the full executor simulation after each scan. The workflow hard-sets `LIVE_TRADING=false`; it will never broadcast a transaction. GitHub scheduled and manual-dispatch workflows must exist on the repository default branch to be triggerable. Merge this workflow into the default branch before using either trigger.\n\n## Executor: simulation first
+## Automated GitHub monitor (simulation-only)\n\n`.github/workflows/flasharb-bot.yml` is configured for manual runs and a five-minute schedule. Add `RPC_URL` as a repository Actions secret. Optionally add `EXECUTOR_ADDRESS` and `WALLET_PRIVATE_KEY` as Actions secrets to run the full executor simulation after each scan. The workflow hard-sets `LIVE_TRADING=false`; it will never broadcast a transaction. GitHub scheduled and manual-dispatch workflows must exist on the repository default branch to be triggerable. Merge this workflow into the default branch before using either trigger.\n\n
+## Gas-sponsored execution milestone (Base Sepolia first)
+
+The preferred next execution path is ERC-4337 through Pimlico on Base. This does not make gas disappear: the paymaster fronts network gas and charges the sponsor account/provider balance. Pimlico documents free sponsorship on testnets; mainnet sponsorship requires a paid plan. The existing Ethereum scanner and EOA executor are unchanged.
+
+Files added:
+- `smart-account-address.js`: derives the deterministic Simple Account address from the test wallet key.
+- `sponsored-userop.js`: checks the executor owner, simulates the full `start(...)` call with `eth_call`, and can submit that call as one sponsored UserOperation.
+- The Solidity constructor now accepts an explicit `ownerAddress`, so a separately deployed executor can be owned by the ERC-4337 smart account rather than the deployer EOA.
+
+Base Sepolia test flow (not production):
+1. Create a Pimlico account/API key and a Base Sepolia RPC endpoint.
+2. Use a dedicated test-only private key. Never paste it into chat or commit it.
+3. Copy `.env.example` to `.env`, fill `BASE_SEPOLIA_RPC_URL`, `PIMLICO_API_KEY`, and the test wallet key.
+4. Run `npm run smart-account:address`; note the printed `sponsoredSmartAccount`.
+5. Deploy the contract to Base Sepolia with the verified Base Sepolia Aave V3 PoolAddressesProvider and that smart-account address as the second constructor argument. Do not reuse the Ethereum Mainnet provider address.
+6. Configure the contract's token/router allowlists from the smart account. Use only verified Base Sepolia token and router contracts.
+7. Set the route fields in `.env` using raw token base units and run `npm run sponsored:testnet` with `SPONSORED_SEND=false` first. The full Aave callback and both swaps must pass the `eth_call` simulation.
+8. Only after the dry-run passes, set `SPONSORED_SEND=true` to submit a real Base Sepolia testnet UserOperation. Testnet transactions use test assets and do not prove a live arbitrage opportunity.
+
+Important limitations:
+- The current contract still executes two V2-style swaps only. The chosen Base Sepolia routers and pools must actually exist and have liquidity.
+- The flash-loan receiver must be deployed with `ownerAddress` equal to the derived smart-account address. Otherwise the owner check rejects the call.
+- The paymaster can refuse sponsorship, and a failed on-chain operation may still consume sponsored gas from the sponsor's balance.
+- No Base Sepolia deployment, paymaster sponsorship, or successful UserOperation has yet been performed or verified.
+- Do not enable mainnet execution. The existing executor is still experimental and unaudited; testnet success is not production approval.
+
+## Executor: simulation first
 
 ```bash
 npm run simulate
