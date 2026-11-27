@@ -123,6 +123,7 @@ async function main() {
                   grossProfit: ethers.formatUnits(gross, baseToken.decimals),
                   estimatedGasCost: ethers.formatUnits(gasCostBase, baseToken.decimals),
                   estimatedNetProfit: ethers.formatUnits(net, baseToken.decimals),
+                  estimatedNetProfitRaw: net.toString(),
                   gasPriceWei: gasPrice.toString(),
                   gasAdjusted: true,
                   quoteBlock: block,
