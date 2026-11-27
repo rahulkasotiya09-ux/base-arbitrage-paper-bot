@@ -1,0 +1,51 @@
+name: Base sponsored deployment preflight (no broadcast)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: base-sponsored-deployment-preflight
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout reviewed bot branch
+        uses: actions/checkout@v4
+        with:
+          ref: dev/flashloan-bot-build
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Install dependencies
+        run: npm install --omit=dev --no-audit --no-fund
+      - name: Validate required secrets without printing them
+        env:
+          WALLET_PRIVATE_KEY: ${{ secrets.WALLET_PRIVATE_KEY || secrets.TEST_WALLET_PRIVATE_KEY }}
+          PIMLICO_API_KEY: ${{ secrets.PIMLICO_API_KEY }}
+        run: |
+          test -n "$WALLET_PRIVATE_KEY" || (echo "Missing WALLET_PRIVATE_KEY secret" && exit 1)
+          test -n "$PIMLICO_API_KEY" || (echo "Missing PIMLICO_API_KEY secret" && exit 1)
+      - name: Prepare sponsored deployment request (read-only; no signature or broadcast)
+        env:
+          WALLET_PRIVATE_KEY: ${{ secrets.WALLET_PRIVATE_KEY || secrets.TEST_WALLET_PRIVATE_KEY }}
+          PIMLICO_API_KEY: ${{ secrets.PIMLICO_API_KEY }}
+          BASE_RPC_URL: ${{ secrets.BASE_RPC_URL || 'https://mainnet.base.org' }}
+          AAVE_POOL_ADDRESSES_PROVIDER: '0xe20fCBdBfFC4Dd138cE8b2E6FBb6CB49777ad64D'
+          AAVE_POOL_EXPECTED: '0xA238Dd80C259a72e81d7e4664a9801593F98d1c5'
+        run: |
+          set -o pipefail
+          node base-mainnet-deploy-plan.js | tee sponsored-deployment-plan.json
+      - name: Upload deployment plan
+        if: always() && hashFiles('sponsored-deployment-plan.json') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: base-sponsored-deployment-plan-${{ github.run_number }}
+          path: sponsored-deployment-plan.json
+          retention-days: 7
