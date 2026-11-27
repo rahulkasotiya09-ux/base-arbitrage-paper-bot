@@ -7,8 +7,12 @@ for (const key of ["RPC_URL", "EXECUTOR_ADDRESS", "WALLET_PRIVATE_KEY"]) {
   if (!process.env[key]) throw new Error(`Missing ${key} in .env`);
 }
 const LIVE = process.env.LIVE_TRADING === "true";
-if (LIVE && process.env.CONFIRM_LIVE_TRADING !== "I_ACCEPT_TRANSACTION_RISK") {
-  throw new Error("Live mode requires explicit risk confirmation");
+const BROADCAST_FLAG = process.argv.includes("--broadcast");
+if (LIVE && (!BROADCAST_FLAG || process.env.CONFIRM_LIVE_TRADING !== "I_ACCEPT_TRANSACTION_RISK")) {
+  throw new Error("Broadcast blocked: live mode requires LIVE_TRADING=true, the --broadcast CLI flag, and explicit risk confirmation.");
+}
+if (!LIVE && BROADCAST_FLAG) {
+  throw new Error("Broadcast flag supplied but LIVE_TRADING is not true; refusing to send.");
 }
 const provider = new ethers.JsonRpcProvider(process.env.RPC_URL, cfg.chainId);
 const wallet = new ethers.Wallet(process.env.WALLET_PRIVATE_KEY, provider);
@@ -94,6 +98,10 @@ async function main() {
     if (await provider.getCode(token) === "0x") throw new Error("Token contract missing");
   }
 
+  if (asset.toLowerCase() !== cfg.wrappedNative.toLowerCase()) {
+    throw new Error("Live executor only supports the configured wrapped-native asset as the gas-reserve denomination");
+  }
+
   const amount = ethers.parseUnits(c.amountIn, base.decimals);
   const fee = await provider.getFeeData();
   const feeFields = fee.maxFeePerGas
@@ -104,41 +112,55 @@ async function main() {
 
   const price = await getMinimumProfitWeth();
   const deadline = Math.floor(Date.now() / 1000) + 45;
-  // First estimate the execution path with zero reserve/floor. This estimate is
-  // never used as approval to trade; the final call below must pass with all costs.
+  // The reserve is embedded in calldata, so estimate gas and L1 data fees
+  // repeatedly using the exact candidate calldata until the reserve converges.
+  // Any RPC instability or failure to converge causes a safe refusal.
   const route = {
     intermediateToken: intermediate, buyRouter: buy, sellRouter: sell,
     minIntermediateOut: minOut(BigInt(c.intermediateOutRaw)),
     minFinalOut: minOut(BigInt(c.finalOutRaw)),
-    gasCostInAsset: 0n, minProfit: 0n, deadline
+    gasCostInAsset: 1n, minProfit: price.minimumWethWei, deadline
   };
   const populate = r => executor.start.populateTransaction(asset, amount, r);
-  let tx = await populate(route);
-  const gas = await provider.estimateGas({ ...tx, from: wallet.address, ...feeFields });
-  const l2Cost = gas * cap;
-
-  // L1 fee depends on calldata, and calldata contains gasCostInAsset. Iterate
-  // until the reserve and the fee for that final calldata agree; fail closed.
-  let l1Fee = await getL1Fee(tx.data ?? "0x");
-  let reserve = 0n;
+  let tx;
+  let gas = 0n;
+  let l1Fee = 0n;
+  let reserve = 1n;
   let converged = false;
-  for (let i = 0; i < 8; i++) {
-    const nextReserve = ceilDiv((l2Cost + l1Fee) * buffer, 10000n);
-    route.gasCostInAsset = nextReserve;
-    route.minProfit = price.minimumWethWei;
+  for (let i = 0; i < 12; i++) {
     tx = await populate(route);
-    const measuredL1Fee = await getL1Fee(tx.data ?? "0x");
-    const verifiedReserve = ceilDiv((l2Cost + measuredL1Fee) * buffer, 10000n);
-    if (verifiedReserve === nextReserve) {
-      l1Fee = measuredL1Fee;
-      reserve = nextReserve;
+    const [measuredGas, measuredL1Fee] = await Promise.all([
+      provider.estimateGas({ ...tx, from: wallet.address, ...feeFields }),
+      getL1Fee(tx.data ?? "0x")
+    ]);
+    const measuredL2Cost = measuredGas * cap;
+    const nextReserve = ceilDiv((measuredL2Cost + measuredL1Fee) * buffer, 10000n);
+    gas = measuredGas;
+    l1Fee = measuredL1Fee;
+    if (nextReserve === reserve) {
       converged = true;
       break;
     }
-    l1Fee = measuredL1Fee;
     reserve = nextReserve;
+    route.gasCostInAsset = reserve;
   }
-  if (!converged) throw new Error("L1 fee reserve did not converge for final calldata; refusing execution");
+  if (!converged) {
+    throw new Error("Final-calldata L2/L1 gas reserve did not converge; refusing execution");
+  }
+  // tx is populated with the converged reserve. Re-estimate once more against
+  // that exact calldata and ensure its required reserve still matches.
+  tx = await populate(route);
+  const [finalGas, finalL1Fee] = await Promise.all([
+    provider.estimateGas({ ...tx, from: wallet.address, ...feeFields }),
+    getL1Fee(tx.data ?? "0x")
+  ]);
+  const finalReserve = ceilDiv((finalGas * cap + finalL1Fee) * buffer, 10000n);
+  if (finalReserve !== route.gasCostInAsset) {
+    throw new Error("Final calldata changed its gas reserve after verification; refusing execution");
+  }
+  gas = finalGas;
+  l1Fee = finalL1Fee;
+  reserve = finalReserve;
 
   const walletBalance = await provider.getBalance(wallet.address);
   if (walletBalance < reserve) {
