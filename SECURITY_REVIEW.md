@@ -22,11 +22,21 @@ No contract has been deployed by this review. No wallet transaction was signed o
 
 ## Verified in CI
 
-- Solidity compilation succeeded.
-- Read-only Base Mainnet preflight succeeded: Aave provider/Pool, Chainlink ETH/USD feed metadata/freshness, configured token bytecode, V2 router/factory mappings, V3 component bytecode, Aave premium, WETH liquidity, and deployment estimate.
-- Fork tests passed, including a current-live-reserve test that does not alter pool reserves and confirms a same-venue losing round trip is rejected.
+- Solidity compilation succeeded in earlier CI runs.
+- Read-only Base Mainnet preflight succeeded in an earlier run: Aave provider/Pool, Chainlink ETH/USD feed metadata/freshness, configured token bytecode, V2 router/factory mappings, V3 component bytecode, Aave premium, WETH liquidity, and deployment estimate.
+- Earlier fork tests passed, including a current-live-reserve test that does not alter pool reserves and confirms a same-venue losing round trip is rejected.
 - A separate artificial-spread fork test demonstrates the callback/repayment path under a deliberately created profitable test condition; it is not evidence of live arbitrage profitability.
 - Production dependency audit is enforced in CI for high/critical vulnerabilities.
+
+## Newly added tests — pending CI execution
+
+Added `test/AaveV3CallbackSecurity.t.sol` with focused regression cases:
+- Reject callback attempts from any address other than the configured Aave Pool.
+- Reject a callback from Aave while the receiver is idle.
+- Reject a callback with an incorrect initiator.
+- Reject a non-owner attempt to start a flash loan.
+
+These are source additions only until the Base fork test workflow runs successfully. They do not prove protection against every malicious token/router or every reentrancy path.
 
 ## Remaining risks and blockers
 
