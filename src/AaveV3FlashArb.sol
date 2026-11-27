@@ -82,11 +82,12 @@ contract AaveV3FlashArb {
         _;
     }
 
-    constructor(address addressesProvider) {
+    constructor(address addressesProvider, address ownerAddress) {
         require(addressesProvider != address(0), "ZERO_PROVIDER");
+        require(ownerAddress != address(0), "ZERO_OWNER");
         address poolAddress = IPoolAddressesProvider(addressesProvider).getPool();
         require(poolAddress != address(0) && poolAddress.code.length > 0, "BAD_POOL");
-        owner = msg.sender;
+        owner = ownerAddress;
         pool = IAaveV3Pool(poolAddress);
     }
 
