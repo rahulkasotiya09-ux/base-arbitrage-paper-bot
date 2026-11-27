@@ -58,8 +58,9 @@ if (amount <= 0n || minIntermediateOut <= 0n || minFinalOut <= 0n) {
 }
 if (asset === intermediateToken) throw new Error("Borrowed and intermediate assets must differ");
 
-const ownerKey = process.env.WALLET_PRIVATE_KEY;
-if (!/^0x[0-9a-fA-F]{64}$/.test(ownerKey)) throw new Error("WALLET_PRIVATE_KEY must be a 32-byte hex key");
+const rawOwnerKey = process.env.WALLET_PRIVATE_KEY.trim();
+const ownerKey = rawOwnerKey.startsWith("0x") ? rawOwnerKey : `0x${rawOwnerKey}`;
+if (!/^0x[0-9a-fA-F]{64}$/.test(ownerKey)) throw new Error("WALLET_PRIVATE_KEY must contain exactly 64 hexadecimal characters, optionally prefixed with 0x");
 const owner = privateKeyToAccount(ownerKey);
 const publicClient = createPublicClient({
   chain: baseSepolia,
