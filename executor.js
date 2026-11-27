@@ -105,7 +105,7 @@ async function main() {
   }
   const compatible = (output.candidates ?? []).filter(x =>
     x.base === "WETH" && x.executorCompatible && x.buyRouter && x.sellRouter && x.intermediate &&
-    x.estimatedNetProfitRaw && /^\\d+$/.test(String(x.estimatedNetProfitRaw))
+    x.estimatedNetProfitRaw && /^\d+$/.test(String(x.estimatedNetProfitRaw))
   );
   compatible.sort((a, b) => {
     const av = BigInt(a.estimatedNetProfitRaw);
