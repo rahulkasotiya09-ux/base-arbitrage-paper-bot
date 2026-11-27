@@ -149,5 +149,5 @@ console.log(JSON.stringify({
   maxDeploymentCostEth: (Number(maxCost) / 1e18).toFixed(10),
   balanceCoversBufferedEstimate: affordable,
   estimatedRemainingWei: affordable ? predictedAfter.toString() : null,
-  warning: "This estimates direct EOA deployment only. Actual inclusion cost can differ. Deployment is NOT recommended until contract security/profit accounting is fixed. This script does not sign or send."
+  warning: "This estimates direct EOA deployment only. It does not sign or send. Contract safeguards and fork tests pass, but this experimental strategy is unaudited; deploy only after independent review and a separate explicit deployment approval."
 }, null, 2));
