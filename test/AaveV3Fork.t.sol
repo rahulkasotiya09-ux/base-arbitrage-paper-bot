@@ -13,11 +13,12 @@ interface IUniswapV2Pair {
 }
 
 contract AaveV3ForkTest is Test {
-    // Aave V3 Ethereum Mainnet PoolAddressesProvider (official deployment).
-    address constant ADDRESSES_PROVIDER = 0x2f39d218133AFaB8F2B819B1066c7E434Ad94E9e;
-    address constant WETH = 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2;
-    address constant USDC = 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48;
-    address constant UNISWAP_V2_ROUTER = 0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D;
+    // Base Mainnet deployments; keep fork tests on the target production chain.
+    address constant ADDRESSES_PROVIDER = 0xe20fCBdBfFC4Dd138cE8b2E6FBb6CB49777ad64D;
+    address constant WETH = 0x4200000000000000000000000000000000000006;
+    address constant USDC = 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913;
+    address constant UNISWAP_V2_ROUTER = 0x4752ba5dbc23f44d87826276bf6fd6b1c372ad24;
+    address constant BASESWAP_V2_ROUTER = 0x327Df1E6de05895d2ab08513aaDD9313Fe505d86;
 
     function testForkResolvesLiveAavePoolAndPremium() public {
         vm.createSelectFork(vm.envString("RPC_URL"));
@@ -40,9 +41,9 @@ contract AaveV3ForkTest is Test {
         vm.createSelectFork(vm.envString("RPC_URL"));
 
         AaveV3FlashArb receiver = new AaveV3FlashArb(ADDRESSES_PROVIDER, address(this));
-        address sushiRouter = 0xd9e1cE17f2641f24aE83637ab66a2cca9C378B9F;
+        address sushiRouter = BASESWAP_V2_ROUTER;
 
-        // Locate the real WETH/USDC V2 pairs behind the two real router contracts.
+        // Locate the real Base WETH/USDC V2 pairs behind the two router contracts.
         address uniFactory = IV2Router(UNISWAP_V2_ROUTER).factory();
         address sushiFactory = IV2Router(sushiRouter).factory();
         address uniPair = IUniswapV2Factory(uniFactory).getPair(WETH, USDC);
@@ -100,8 +101,8 @@ contract AaveV3ForkTest is Test {
             sellRouter: UNISWAP_V2_ROUTER,
             minIntermediateOut: 1,
             minFinalOut: 1,
-            gasCostInAsset: 0,
-            minProfit: 0,
+            gasCostInAsset: 1,
+            minProfit: 1,
             deadline: block.timestamp + 60
         });
 
