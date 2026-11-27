@@ -32,7 +32,7 @@ contract AaveV3ForkTest is Test {
 
     function testReceiverUsesProviderPool() public {
         vm.createSelectFork(vm.envString("BASE_RPC_URL"));
-        AaveV3FlashArb receiver = new AaveV3FlashArb(ADDRESSES_PROVIDER, address(this));
+        AaveV3FlashArb receiver = new AaveV3FlashArb(ADDRESSES_PROVIDER, address(this), WETH);
         assertEq(address(receiver.pool()), IPoolAddressesProvider(ADDRESSES_PROVIDER).getPool());
         assertEq(receiver.owner(), address(this));
     }
@@ -40,7 +40,7 @@ contract AaveV3ForkTest is Test {
     function testForkExecutesProfitableFlashLoanTwoSwapsAndRepays() public {
         vm.createSelectFork(vm.envString("BASE_RPC_URL"));
 
-        AaveV3FlashArb receiver = new AaveV3FlashArb(ADDRESSES_PROVIDER, address(this));
+        AaveV3FlashArb receiver = new AaveV3FlashArb(ADDRESSES_PROVIDER, address(this), WETH);
         address sushiRouter = BASESWAP_V2_ROUTER;
 
         // Locate the real Base WETH/USDC V2 pairs behind the two router contracts.
@@ -50,6 +50,9 @@ contract AaveV3ForkTest is Test {
         address sushiPair = IUniswapV2Factory(sushiFactory).getPair(WETH, USDC);
         assertTrue(uniPair.code.length > 0, "Uniswap WETH/USDC pair missing");
         assertTrue(sushiPair.code.length > 0, "Sushi WETH/USDC pair missing");
+
+        // Fund Aave's underlying WETH liquidity on this fork so the test amount is borrowable.
+        deal(WETH, address(receiver.pool()), 10 ether);
 
         // Deterministically create a profitable price spread on this fork only:
         // buy USDC at 3,000 USDC/WETH on Uniswap, then buy WETH at 2,500 USDC/WETH on Sushi.
@@ -84,13 +87,13 @@ contract AaveV3ForkTest is Test {
         receiver.start(WETH, loanAmount, route);
         uint256 balanceAfter = IERC20(WETH).balanceOf(address(receiver));
 
-        assertGe(balanceAfter, balanceBefore + 0.01 ether, "minimum net profit not retained");
+        assertGe(balanceAfter, balanceBefore + route.gasCostInAsset + route.minProfit, "gas reserve plus minimum net profit not retained");
         assertEq(IERC20(WETH).allowance(address(receiver), address(receiver.pool())), 0, "unexpected leftover pool allowance");
     }
 
     function testForkRejectsLosingFlashLoanRoundTrip() public {
         vm.createSelectFork(vm.envString("BASE_RPC_URL"));
-        AaveV3FlashArb receiver = new AaveV3FlashArb(ADDRESSES_PROVIDER, address(this));
+        AaveV3FlashArb receiver = new AaveV3FlashArb(ADDRESSES_PROVIDER, address(this), WETH);
         receiver.setToken(WETH, true);
         receiver.setToken(USDC, true);
         receiver.setRouter(UNISWAP_V2_ROUTER, true);
@@ -114,7 +117,7 @@ contract AaveV3ForkTest is Test {
 
     function testForkLiveReservesRejectSameVenueLossMakingRoundTrip() public {
         vm.createSelectFork(vm.envString("BASE_RPC_URL"));
-        AaveV3FlashArb receiver = new AaveV3FlashArb(ADDRESSES_PROVIDER, address(this));
+        AaveV3FlashArb receiver = new AaveV3FlashArb(ADDRESSES_PROVIDER, address(this), WETH);
 
         address pair = IUniswapV2Factory(IV2Router(UNISWAP_V2_ROUTER).factory()).getPair(WETH, USDC);
         assertTrue(pair.code.length > 0, "live WETH/USDC pair missing");
@@ -143,10 +146,10 @@ contract AaveV3ForkTest is Test {
         receiver.start(WETH, loanAmount, route);
     }
 
-    function testCanAssignOwnershipToSponsoredSmartAccount() public {
+    function testCanAssignOwnershipToConfiguredOwnerAddress() public {
         vm.createSelectFork(vm.envString("BASE_RPC_URL"));
         address smartAccount = address(0xCAFE);
-        AaveV3FlashArb receiver = new AaveV3FlashArb(ADDRESSES_PROVIDER, smartAccount);
+        AaveV3FlashArb receiver = new AaveV3FlashArb(ADDRESSES_PROVIDER, smartAccount, WETH);
         assertEq(receiver.owner(), smartAccount);
         vm.prank(smartAccount);
         receiver.setToken(WETH, true);
@@ -157,7 +160,7 @@ contract AaveV3ForkTest is Test {
 
     function testOnlyOwnerCanConfigure() public {
         vm.createSelectFork(vm.envString("BASE_RPC_URL"));
-        AaveV3FlashArb receiver = new AaveV3FlashArb(ADDRESSES_PROVIDER, address(this));
+        AaveV3FlashArb receiver = new AaveV3FlashArb(ADDRESSES_PROVIDER, address(this), WETH);
         vm.prank(address(0xBEEF));
         vm.expectRevert(bytes("NOT_OWNER"));
         receiver.setToken(address(0x1234), true);
