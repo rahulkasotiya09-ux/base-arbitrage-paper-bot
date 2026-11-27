@@ -4,7 +4,7 @@ This repository now contains three separate pieces:
 
 1. `scanner.js`: read-only same-block DEX quote scanner. It reads Aave's live flash-loan premium from the Pool at the scan block and only labels WETH-denominated routes as candidates because native ETH gas can be directly reserved in WETH units.
 2. `src/AaveV3FlashArb.sol`: owner-operated Aave V3 `flashLoanSimple` receiver. It performs two allowlisted Uniswap-V2-compatible swaps, approves Aave for principal + the premium returned by Aave, and reverts unless the borrowed-asset balance covers repayment, the caller's conservative gas reserve, and the minimum desired profit.
-3. `executor.js`: reads the scanner output, selects a V2/V2 WETH candidate, estimates gas, reserves gas in WETH, then simulates the complete transaction with `eth_call`. It does not broadcast by default.
+3. `executor.js`: reads the scanner output, rejects stale quotes, selects a V2/V2 WETH candidate, estimates gas, reserves gas in WETH, then simulates the complete transaction with `eth_call`. It does not broadcast in the automated workflow.\n4. `bot.js`: repeatable monitor loop that runs the scanner and, when a deployed contract plus a dedicated wallet are configured, runs the full executor simulation. It never enables live trading by itself.
 
 ## Important: not a guaranteed-profit machine
 
@@ -57,7 +57,7 @@ Then, from the contract owner wallet, allowlist only the exact assets and router
 
 The executor requires `EXECUTOR_ADDRESS` and `WALLET_PRIVATE_KEY` in a local `.env` file. Use a dedicated wallet with no unrelated assets. Never commit `.env`, private keys, seed phrases, or RPC secrets to GitHub.
 
-## Executor: simulation first
+## Automated GitHub monitor (simulation-only)\n\n`.github/workflows/flasharb-bot.yml` is configured for manual runs and a five-minute schedule. Add `RPC_URL` as a repository Actions secret. Optionally add `EXECUTOR_ADDRESS` and `WALLET_PRIVATE_KEY` as Actions secrets to run the full executor simulation after each scan. The workflow hard-sets `LIVE_TRADING=false`; it will never broadcast a transaction. GitHub scheduled workflows run only from the repository default branch, so this workflow must be merged into the default branch before the five-minute schedule becomes active. You can manually dispatch it from the development branch after the workflow file is present there.\n\n## Executor: simulation first
 
 ```bash
 npm run simulate
@@ -91,7 +91,7 @@ See `.env.example`. Keep secrets local or in GitHub Actions Secrets. Never paste
 - The executor currently uses scanner snapshots as route hints and relies on on-chain simulation plus strict minimum outputs to reject stale or unprofitable trades.
 - Gas reserve is an estimate and WETH is treated as 1:1 with ETH for that reserve.
 - No private transaction relay / MEV protection is configured.
-- No automated keeper loop is enabled; execution is a manual CLI invocation.
+- The local `bot.js` runner continuously scans and can simulate, but it is not a hosted transaction keeper. The GitHub workflow is scheduled monitoring/simulation only and deliberately cannot send trades.
 - The contract's `minProfit` is denominated in the borrowed asset and is a threshold after the supplied gas reserve, not a promise of profit.
 
 Do not fund or deploy this until the fork tests pass on your own RPC, router/token addresses are independently verified, and an experienced Solidity auditor has reviewed the code.
