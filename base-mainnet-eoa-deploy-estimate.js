@@ -22,6 +22,8 @@ const client = createPublicClient({ chain: base, transport: http(rpc) });
 
 if (await client.getChainId() !== 8453) throw new Error("RPC is not Base Mainnet (chain ID 8453).");
 const owner = privateKeyToAccount(privateKey);
+const expectedOwner = getAddress("0x88073Ad37F9e1cb6E09048c57fAe4A70383D9aBb");
+if (owner.address !== expectedOwner) throw new Error("WALLET_PRIVATE_KEY does not match the approved deployment wallet; estimate aborted.");
 const [balance, factoryCode, providerPool] = await Promise.all([
   client.getBalance({ address: owner.address }),
   client.getCode({ address: create2Factory }),
