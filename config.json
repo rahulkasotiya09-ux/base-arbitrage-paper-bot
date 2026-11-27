@@ -21,6 +21,22 @@
     "USDC": {
       "address": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
       "decimals": 6
+    },
+    "cbETH": {
+      "address": "0x2Ae3F1Ec7F1F5012CFEab0185bfc7aa3cf0DEc22",
+      "decimals": 18
+    },
+    "weETH": {
+      "address": "0x04C0599Ae5A44757c0af6F9eC3b93da8976c150A",
+      "decimals": 18
+    },
+    "wstETH": {
+      "address": "0xc1CBa3fCea344f92D9239c08C0568f6F2F0ee452",
+      "decimals": 18
+    },
+    "GHO": {
+      "address": "0x6Bb7a212910682DCFdbd5BCBb3e28FB4E8da10Ee",
+      "decimals": 18
     }
   },
   "venues": [
@@ -35,6 +51,18 @@
       "type": "v2",
       "router": "0x327Df1E6de05895d2ab08513aaDD9313Fe505d86",
       "factory": "0xFDa619b6d20975be80A10332cD39b9a4b0FAa8BB"
+    },
+    {
+      "name": "Uniswap V3 Base",
+      "type": "v3",
+      "quoter": "0x3d4e44Eb1374240CE5F1B871ab261CD16335B76a",
+      "router": "0x2626664c2603336E57B271c5C0b26F421741e481",
+      "factory": "0x33128a8fC17869897dcE68Ed026d694621f6FDfD",
+      "fees": [
+        500,
+        3000,
+        10000
+      ]
     }
   ],
   "aaveAddressesProvider": "0xe20fCBdBfFC4Dd138cE8b2E6FBb6CB49777ad64D"
