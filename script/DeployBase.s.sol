@@ -22,9 +22,28 @@ contract DeployBase is Script {
 
     event ExecutorDeployed(address indexed executor, address indexed owner, bytes32 runtimeCodeHash);
 
+
+    /// @dev Parse a 32-byte hexadecimal private key from the Actions secret without logging it.
+    function _privateKeyFromEnv() internal view returns (uint256 key) {
+        string memory raw = vm.envString("WALLET_PRIVATE_KEY");
+        bytes memory data = bytes(raw);
+        uint256 offset = data.length == 66 && data[0] == "0" && (data[1] == "x" || data[1] == "X") ? 2 : 0;
+        require(data.length - offset == 64, "PRIVATE_KEY_MUST_BE_32_BYTE_HEX");
+        for (uint256 i = offset; i < data.length; ++i) {
+            uint8 ch = uint8(data[i]);
+            uint256 digit;
+            if (ch >= 48 && ch <= 57) digit = ch - 48;
+            else if (ch >= 65 && ch <= 70) digit = ch - 55;
+            else if (ch >= 97 && ch <= 102) digit = ch - 87;
+            else revert("PRIVATE_KEY_NOT_HEX");
+            key = (key << 4) | digit;
+        }
+        require(key != 0, "PRIVATE_KEY_ZERO");
+    }
+
     function run() external {
         require(block.chainid == 8453, "BASE_MAINNET_ONLY");
-        uint256 privateKey = vm.envUint("WALLET_PRIVATE_KEY");
+        uint256 privateKey = _privateKeyFromEnv();
         address deployer = vm.addr(privateKey);
         require(deployer == 0x88073Ad37F9e1cb6E09048c57fAe4A70383D9aBb, "UNEXPECTED_DEPLOYER");
 
