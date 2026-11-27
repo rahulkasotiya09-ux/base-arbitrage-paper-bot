@@ -19,17 +19,51 @@ const executor = new ethers.Contract(process.env.EXECUTOR_ADDRESS, [
 const routerAbi = ["function factory() view returns (address)"];
 const l1Oracle = "0x420000000000000000000000000000000000000F";
 const l1Iface = new ethers.Interface(["function getL1Fee(bytes data) view returns (uint256)"]);
+const priceFeedAbi = [
+  "function decimals() view returns (uint8)",
+  "function latestRoundData() view returns (uint80 roundId,int256 answer,uint256 startedAt,uint256 updatedAt,uint80 answeredInRound)"
+];
 const slip = BigInt(process.env.SLIPPAGE_BPS ?? "30");
-const buffer = BigInt(process.env.GAS_BUFFER_BPS ?? "15000");
-const minProfit = BigInt(process.env.MIN_PROFIT_BASE_UNITS ?? cfg.minProfitBaseUnits);
+const buffer = BigInt(process.env.GAS_BUFFER_BPS ?? "20000");
+const minProfitUsdCents = BigInt(cfg.minProfitUsdCents ?? 1);
 const minOut = x => x * (10000n - slip) / 10000n;
+const ceilDiv = (n, d) => (n + d - 1n) / d;
+
+async function getL1Fee(data) {
+  const callData = l1Iface.encodeFunctionData("getL1Fee", [data ?? "0x"]);
+  const raw = await provider.call({ to: l1Oracle, data: callData });
+  return l1Iface.decodeFunctionResult("getL1Fee", raw)[0];
+}
+
+async function getMinimumProfitWeth() {
+  if (!Number.isSafeInteger(Number(minProfitUsdCents)) || minProfitUsdCents < 1n) {
+    throw new Error("Minimum profit must be at least one USD cent");
+  }
+  const feedAddress = ethers.getAddress(cfg.ethUsdFeed);
+  const feed = new ethers.Contract(feedAddress, priceFeedAbi, provider);
+  const [decimals, round] = await Promise.all([feed.decimals(), feed.latestRoundData()]);
+  const [roundId, answer, , updatedAt, answeredInRound] = round;
+  const now = BigInt(Math.floor(Date.now() / 1000));
+  if (answer <= 0n || updatedAt === 0n || answeredInRound < roundId ||
+      now < updatedAt || now - updatedAt > BigInt(cfg.maxEthUsdPriceAgeSeconds ?? 1800)) {
+    throw new Error("ETH/USD price feed is invalid or stale; refusing execution");
+  }
+  const scale = 10n ** BigInt(decimals);
+  // Convert the configured USD-cent floor to WETH wei, rounding upward.
+  const minimumWethWei = ceilDiv(minProfitUsdCents * 10n ** 18n * scale, 100n * answer);
+  return { minimumWethWei, ethUsdAnswer: answer.toString(), feedDecimals: Number(decimals), updatedAt: updatedAt.toString() };
+}
 
 async function main() {
   if (cfg.chainId !== 8453 || Number((await provider.getNetwork()).chainId) !== 8453) {
     throw new Error("Executor is restricted to Base Mainnet (chain 8453)");
   }
-  if (slip < 1n || slip > 500n || buffer < 10000n || buffer > 20000n) throw new Error("Unsafe slippage or gas-buffer setting");
-  if ((await executor.owner()).toLowerCase() !== wallet.address.toLowerCase()) throw new Error("Wallet is not contract owner");
+  if (slip < 1n || slip > 500n || buffer < 10000n || buffer > 30000n) {
+    throw new Error("Unsafe slippage or gas-buffer setting");
+  }
+  if ((await executor.owner()).toLowerCase() !== wallet.address.toLowerCase()) {
+    throw new Error("Wallet is not contract owner");
+  }
 
   const output = JSON.parse(fs.readFileSync(new URL("./opportunities.json", import.meta.url), "utf8"));
   const block = await provider.getBlockNumber();
@@ -52,9 +86,13 @@ async function main() {
     const [code, factory] = await Promise.all([
       provider.getCode(addr), new ethers.Contract(addr, routerAbi, provider).factory()
     ]);
-    if (code === "0x" || factory.toLowerCase() !== venue.factory.toLowerCase()) throw new Error("Router code/factory verification failed");
+    if (code === "0x" || factory.toLowerCase() !== venue.factory.toLowerCase()) {
+      throw new Error("Router code/factory verification failed");
+    }
   }
-  for (const token of [asset, intermediate]) if (await provider.getCode(token) === "0x") throw new Error("Token contract missing");
+  for (const token of [asset, intermediate]) {
+    if (await provider.getCode(token) === "0x") throw new Error("Token contract missing");
+  }
 
   const amount = ethers.parseUnits(c.amountIn, base.decimals);
   const fee = await provider.getFeeData();
@@ -63,44 +101,91 @@ async function main() {
     : { gasPrice: fee.gasPrice };
   const cap = feeFields.maxFeePerGas ?? feeFields.gasPrice;
   if (!cap) throw new Error("No gas price available");
+
+  const price = await getMinimumProfitWeth();
   const deadline = Math.floor(Date.now() / 1000) + 45;
+  // First estimate the execution path with zero reserve/floor. This estimate is
+  // never used as approval to trade; the final call below must pass with all costs.
   const route = {
     intermediateToken: intermediate, buyRouter: buy, sellRouter: sell,
     minIntermediateOut: minOut(BigInt(c.intermediateOutRaw)),
     minFinalOut: minOut(BigInt(c.finalOutRaw)),
-    gasCostInAsset: 0n, minProfit, deadline
+    gasCostInAsset: 0n, minProfit: 0n, deadline
   };
   const populate = r => executor.start.populateTransaction(asset, amount, r);
   let tx = await populate(route);
   const gas = await provider.estimateGas({ ...tx, from: wallet.address, ...feeFields });
-  // Base has both L2 execution gas and an L1 calldata fee. Fail closed if oracle fails.
-  const data = l1Iface.encodeFunctionData("getL1Fee", [tx.data ?? "0x"]);
-  const l1Raw = await provider.call({ to: l1Oracle, data });
-  const l1Fee = l1Iface.decodeFunctionResult("getL1Fee", l1Raw)[0];
   const l2Cost = gas * cap;
-  const reserve = (l2Cost + l1Fee) * buffer / 10000n;
-  route.gasCostInAsset = reserve;
-  tx = await populate(route);
+
+  // L1 fee depends on calldata, and calldata contains gasCostInAsset. Iterate
+  // until the reserve and the fee for that final calldata agree; fail closed.
+  let l1Fee = await getL1Fee(tx.data ?? "0x");
+  let reserve = 0n;
+  let converged = false;
+  for (let i = 0; i < 8; i++) {
+    const nextReserve = ceilDiv((l2Cost + l1Fee) * buffer, 10000n);
+    route.gasCostInAsset = nextReserve;
+    route.minProfit = price.minimumWethWei;
+    tx = await populate(route);
+    const measuredL1Fee = await getL1Fee(tx.data ?? "0x");
+    const verifiedReserve = ceilDiv((l2Cost + measuredL1Fee) * buffer, 10000n);
+    if (verifiedReserve === nextReserve) {
+      l1Fee = measuredL1Fee;
+      reserve = nextReserve;
+      converged = true;
+      break;
+    }
+    l1Fee = measuredL1Fee;
+    reserve = nextReserve;
+  }
+  if (!converged) throw new Error("L1 fee reserve did not converge for final calldata; refusing execution");
+
+  const walletBalance = await provider.getBalance(wallet.address);
+  if (walletBalance < reserve) {
+    throw new Error(`Wallet ETH balance ${ethers.formatEther(walletBalance)} is below the buffered gas reserve ${ethers.formatEther(reserve)}`);
+  }
   const exactTx = { ...tx, from: wallet.address, gasLimit: gas, ...feeFields };
+  // This exact simulation enforces: principal + Aave premium + buffered L1/L2
+  // gas reserve + at least $0.01 (converted using a fresh ETH/USD oracle).
   await provider.call(exactTx);
-  console.log(JSON.stringify({
-    mode: LIVE ? "LIVE" : "SIMULATION ONLY",
+
+  const report = {
+    mode: LIVE ? "LIVE — only if explicitly enabled" : "SIMULATION ONLY",
     candidate: { amount: c.amountIn, intermediate: c.intermediate, buy: c.buyVenue, sell: c.sellVenue, quoteBlock },
-    estimatedGas: gas.toString(), estimatedL2CostWei: l2Cost.toString(),
-    estimatedL1DataFeeWei: l1Fee.toString(), bufferedReserveWeth: ethers.formatEther(reserve),
-    minimumProfitWeth: ethers.formatEther(minProfit), simulated: true
-  }, null, 2));
-  if (!LIVE) { console.log("Simulation only; no transaction sent."); return; }
+    minimumNetProfitUsd: `0.${minProfitUsdCents.toString().padStart(2, "0")}`,
+    minimumNetProfitWeth: ethers.formatEther(price.minimumWethWei),
+    ethUsdAnswer: price.ethUsdAnswer,
+    ethUsdFeedUpdatedAt: price.updatedAt,
+    estimatedGas: gas.toString(),
+    maxL2GasCostWei: l2Cost.toString(),
+    finalCalldataL1FeeWei: l1Fee.toString(),
+    gasReserveBufferBps: buffer.toString(),
+    bufferedGasReserveWeth: ethers.formatEther(reserve),
+    walletEthBalance: ethers.formatEther(walletBalance),
+    exactFinalTransactionSimulation: "PASSED",
+    noUnaccountedProtocolFeeKnown: true
+  };
+  console.log(JSON.stringify(report, null, 2));
+  if (!LIVE) {
+    console.log("Simulation only; no transaction sent.");
+    return;
+  }
 
   const response = await wallet.sendTransaction({ ...tx, gasLimit: gas, ...feeFields });
   console.log("Broadcast transaction:", response.hash);
   const receipt = await response.wait();
   if (!receipt || receipt.status !== 1) throw new Error("Transaction reverted");
+  const actualL2 = receipt.gasUsed * (receipt.gasPrice ?? cap);
+  const actualL1 = await getL1Fee(receipt.logs ? tx.data ?? "0x" : tx.data ?? "0x");
   console.log(JSON.stringify({
-    transactionHash: receipt.hash, blockNumber: receipt.blockNumber,
-    gasUsed: receipt.gasUsed.toString(),
-    actualL2GasCostEth: ethers.formatEther(receipt.gasUsed * (receipt.gasPrice ?? cap)),
-    note: "Base L1 data fee is additional; inspect receipt and ArbitrageCompleted event for realized net profit."
+    transactionHash: receipt.hash,
+    blockNumber: receipt.blockNumber,
+    actualL2GasCostWei: actualL2.toString(),
+    estimatedL1DataFeeWeiAtExecution: actualL1.toString(),
+    note: "The on-chain contract enforces the buffered gas reserve and USD-cent profit floor. Review the receipt and ArbitrageCompleted event before withdrawing."
   }, null, 2));
 }
-main().catch(e => { console.error("Executor stopped:", e.shortMessage ?? e.message); process.exitCode = 1; });
+main().catch(e => {
+  console.error("Executor stopped:", e.shortMessage ?? e.message);
+  process.exitCode = 1;
+});
