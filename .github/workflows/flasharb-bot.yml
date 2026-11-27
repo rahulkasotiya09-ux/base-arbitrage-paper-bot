@@ -1,0 +1,49 @@
+name: FlashArb automated monitor
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "*/5 * * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: flasharb-monitor
+  cancel-in-progress: false
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      RPC_URL: ${{ secrets.RPC_URL }}
+      EXECUTOR_ADDRESS: ${{ secrets.EXECUTOR_ADDRESS }}
+      WALLET_PRIVATE_KEY: ${{ secrets.WALLET_PRIVATE_KEY }}
+      LIVE_TRADING: "false"
+      RUN_ONCE: "true"
+      SCAN_INTERVAL_MS: "30000"
+      HAS_RPC: ${{ secrets.RPC_URL != '' }}
+      HAS_EXECUTOR: ${{ secrets.EXECUTOR_ADDRESS != '' && secrets.WALLET_PRIVATE_KEY != '' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Verify RPC secret exists
+        if: ${{ env.HAS_RPC != 'true' }}
+        run: |
+          echo "Add RPC_URL in repository Actions secrets before running the scanner."
+          exit 1
+      - name: Install dependencies
+        run: npm install
+      - name: Run scanner and optional full simulation (never broadcasts)
+        run: npm run bot
+      - name: Upload scan results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: flasharb-opportunities
+          path: opportunities.json
+          if-no-files-found: ignore
+          retention-days: 7
