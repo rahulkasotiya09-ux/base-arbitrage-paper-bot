@@ -4,12 +4,6 @@ on:
   schedule:
     - cron: "*/5 * * * *"
   workflow_dispatch:
-  push:
-    branches:
-      - main
-    paths:
-      - ".github/workflows/base-market-scan-5min.yml"
-
 permissions:
   contents: read
 
