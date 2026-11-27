@@ -17,7 +17,7 @@ contract AaveV3ForkTest is Test {
     address constant ADDRESSES_PROVIDER = 0xe20fCBdBfFC4Dd138cE8b2E6FBb6CB49777ad64D;
     address constant WETH = 0x4200000000000000000000000000000000000006;
     address constant USDC = 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913;
-    address constant UNISWAP_V2_ROUTER = 0x4752ba5dbc23f44d87826276bf6fd6b1c372ad24;
+    address constant UNISWAP_V2_ROUTER = 0x4752ba5DBc23f44D87826276BF6Fd6b1C372aD24;
     address constant BASESWAP_V2_ROUTER = 0x327Df1E6de05895d2ab08513aaDD9313Fe505d86;
 
     function testForkResolvesLiveAavePoolAndPremium() public {
