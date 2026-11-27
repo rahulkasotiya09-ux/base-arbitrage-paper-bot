@@ -8,10 +8,19 @@ import { toSimpleSmartAccount } from "permissionless/accounts";
 for (const key of ["BASE_SEPOLIA_RPC_URL", "WALLET_PRIVATE_KEY"]) {
   if (!process.env[key]) throw new Error(`Missing ${key} in .env`);
 }
-if (!/^0x[0-9a-fA-F]{64}$/.test(process.env.WALLET_PRIVATE_KEY)) {
-  throw new Error("WALLET_PRIVATE_KEY must be a 32-byte hex key");
+
+// MetaMask exports the private key without a 0x prefix.
+// Accept either 64 hex characters or 0x followed by 64 hex characters.
+const rawPrivateKey = process.env.WALLET_PRIVATE_KEY.trim();
+const normalizedPrivateKey = rawPrivateKey.startsWith("0x")
+  ? rawPrivateKey
+  : `0x${rawPrivateKey}`;
+
+if (!/^0x[0-9a-fA-F]{64}$/.test(normalizedPrivateKey)) {
+  throw new Error("WALLET_PRIVATE_KEY must contain exactly 64 hexadecimal characters, optionally prefixed with 0x");
 }
-const owner = privateKeyToAccount(process.env.WALLET_PRIVATE_KEY);
+
+const owner = privateKeyToAccount(normalizedPrivateKey);
 const client = createPublicClient({
   chain: baseSepolia,
   transport: http(process.env.BASE_SEPOLIA_RPC_URL)
