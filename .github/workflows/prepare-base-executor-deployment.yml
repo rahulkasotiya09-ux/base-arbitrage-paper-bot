@@ -51,3 +51,5 @@ jobs:
           name: base-flasharb-deployment-simulation-${{ github.run_id }}
           path: broadcast/
           retention-days: 14
+
+# Deployment script source is checked out from dev/flashloan-bot-build.
