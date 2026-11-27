@@ -26,6 +26,7 @@ contract DeployBase is Script {
         require(block.chainid == 8453, "BASE_MAINNET_ONLY");
         uint256 privateKey = vm.envUint("WALLET_PRIVATE_KEY");
         address deployer = vm.addr(privateKey);
+        require(deployer == 0x88073Ad37F9e1cb6E09048c57fAe4A70383D9aBb, "UNEXPECTED_DEPLOYER");
 
         address livePool = IPoolAddressesProvider(AAVE_PROVIDER).getPool();
         require(livePool == EXPECTED_AAVE_POOL, "AAVE_POOL_MISMATCH");
