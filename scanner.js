@@ -13,7 +13,7 @@ const V3_QUOTER_ABI = [
 ];
 const AAVE_PROVIDER_ABI = ["function getPool() view returns (address)"];
 const AAVE_POOL_ABI = ["function FLASHLOAN_PREMIUM_TOTAL() view returns (uint128)"];
-const ERC20_BALANCE_ABI = ["function balanceOf(address) view returns (uint256)"];
+const AAVE_RESERVE_ABI = ["function balanceOf(address) view returns (uint256)"];
 const AAVE_PROVIDER = cfg.aaveAddressesProvider;
 
 const v2 = new Map();
@@ -23,7 +23,6 @@ for (const venue of cfg.venues) {
   if (venue.type === "v3") v3.set(venue.name, new ethers.Contract(venue.quoter, V3_QUOTER_ABI, provider));
 }
 const tokenEntries = Object.entries(cfg.tokens);
-const fmt = (n, d) => Number(ethers.formatUnits(n, d));
 const parse = (n, d) => ethers.parseUnits(String(n), d);
 
 async function quote(venue, tokenIn, tokenOut, amountIn, fee, blockTag) {
@@ -38,14 +37,13 @@ async function quote(venue, tokenIn, tokenOut, amountIn, fee, blockTag) {
     }, { blockTag });
     return q.amountOut ?? q[0];
   } catch {
-    return null; // no pool, insufficient liquidity, or unsupported fee tier
+    return null;
   }
 }
 
 function feeOptions(v) { return v.type === "v3" ? v.fees : [0]; }
 
-
-async function notifyTelegram(text) {
+async function notifyTelegram(message) {
   const botToken = process.env.TELEGRAM_BOT_TOKEN;
   const chatId = process.env.TELEGRAM_CHAT_ID;
   if (!botToken || !chatId) return;
@@ -53,7 +51,7 @@ async function notifyTelegram(text) {
     const res = await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
       method: "POST",
       headers: {"content-type": "application/json"},
-      body: JSON.stringify({chat_id: chatId, text, disable_web_page_preview: true})
+      body: JSON.stringify({chat_id: chatId, text: message, disable_web_page_preview: true})
     });
     if (!res.ok) console.error("Telegram alert failed:", await res.text());
   } catch (err) { console.error("Telegram alert error:", err.message); }
@@ -73,13 +71,16 @@ async function main() {
   const pool = new ethers.Contract(poolAddress, AAVE_POOL_ABI, provider);
   const premiumBps = BigInt(await pool.FLASHLOAN_PREMIUM_TOTAL({ blockTag: block }));
   const rows = [];
-  for (const [baseName, amounts] of cfg.scanAmounts.entries()) {
+  for (const amounts of cfg.scanAmounts) {
     const baseToken = cfg.tokens[amounts.token];
     if (!baseToken) continue;
+    const reserve = new ethers.Contract(baseToken.address, AAVE_RESERVE_ABI, provider);
+    const reserveBalance = await reserve.balanceOf(poolAddress, { blockTag: block });
     for (const [midName, midToken] of tokenEntries) {
       if (midName === amounts.token || midToken.address.toLowerCase() === baseToken.address.toLowerCase()) continue;
       for (const amountText of amounts.amounts) {
         const amountIn = parse(amountText, baseToken.decimals);
+        if (amountIn > reserveBalance) continue;
         for (const buy of cfg.venues) for (const sell of cfg.venues) {
           if (buy.name === sell.name) continue;
           for (const buyFee of feeOptions(buy)) {
@@ -91,8 +92,6 @@ async function main() {
               const premium = amountIn * premiumBps / 10000n;
               const gross = baseOut - amountIn - premium;
               const gasPrice = feeData.maxFeePerGas ?? feeData.gasPrice;
-              // ETH gas is directly denominated in the borrowed asset only for WETH routes.
-              // Exclude other borrowed assets until a reliable gas-to-token conversion is implemented.
               if (baseToken.address.toLowerCase() !== cfg.wrappedNative.toLowerCase() || !gasPrice) continue;
               const gasCostBase = BigInt(cfg.gasLimitEstimate) * gasPrice;
               const net = gross - gasCostBase;
@@ -110,9 +109,9 @@ async function main() {
                   flashPremium: ethers.formatUnits(premium, baseToken.decimals),
                   flashLoanPremiumBps: premiumBps.toString(),
                   grossProfit: ethers.formatUnits(gross, baseToken.decimals),
-                  estimatedGasCost: gasCostBase === null ? "NOT CONVERTED - exclude from decision" : ethers.formatUnits(gasCostBase, baseToken.decimals),
-                  estimatedNetProfit: gasCostBase === null ? "NOT COMPUTED - gas asset differs from borrowed asset" : ethers.formatUnits(net, baseToken.decimals),
-                  gasPriceWei: gasPrice?.toString() ?? null,
+                  estimatedGasCost: ethers.formatUnits(gasCostBase, baseToken.decimals),
+                  estimatedNetProfit: ethers.formatUnits(net, baseToken.decimals),
+                  gasPriceWei: gasPrice.toString(),
                   gasAdjusted: true,
                   quoteBlock: block,
                   l1DataFeeIncluded: false,
@@ -136,13 +135,8 @@ async function main() {
   if (rows.length) {
     const top = rows.slice(0, 5).map(r =>
       `${r.base} ${r.amountIn} | ${r.buyVenue} -> ${r.sellVenue} | estimated net: ${r.estimatedNetProfit}`
-    ).join("
-");
-    await notifyTelegram(`FlashArb scanner: ${rows.length} candidate(s) at block ${block}
-
-${top}
-
-Quotes are indicative only. NOT EXECUTABLE / NOT GUARANTEED.`);
+    ).join("\n");
+    await notifyTelegram(`FlashArb scanner: ${rows.length} candidate(s) at block ${block}\n\n${top}\n\nQuotes are indicative only. NOT EXECUTABLE / NOT GUARANTEED.`);
   }
   console.log(`Scanned block ${block}. ${rows.length} preliminary candidate(s) written to opportunities.json`);
   if (rows.some(r => !r.executionReady)) console.log("Some routes use V3 quotes and are research-only; the current executor supports V2 routes only.");
