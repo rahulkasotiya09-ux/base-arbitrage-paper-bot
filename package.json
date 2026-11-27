@@ -4,7 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "scan": "node scanner.js"
+    "scan": "node scanner.js",
+    "check": ""
   },
   "dependencies": {
     "dotenv": "^16.4.7",
