@@ -12,7 +12,8 @@ const V3_QUOTER_ABI = [
   "function quoteExactInputSingle((address tokenIn,address tokenOut,uint256 amountIn,uint24 fee,uint160 sqrtPriceLimitX96) params) returns (uint256 amountOut,uint160,uint32,uint256)"
 ];
 const AAVE_PROVIDER_ABI = ["function getPool() view returns (address)"];
-const AAVE_POOL_ABI = ["function FLASHLOAN_PREMIUM_TOTAL() view returns (uint128)"];\nconst ERC20_BALANCE_ABI = ["function balanceOf(address) view returns (uint256)"];
+const AAVE_POOL_ABI = ["function FLASHLOAN_PREMIUM_TOTAL() view returns (uint128)"];
+const ERC20_BALANCE_ABI = ["function balanceOf(address) view returns (uint256)"];
 const AAVE_PROVIDER = cfg.aaveAddressesProvider;
 
 const v2 = new Map();
@@ -62,7 +63,11 @@ async function main() {
   const [network, block, feeData] = await Promise.all([
     provider.getNetwork(), provider.getBlockNumber(), provider.getFeeData()
   ]);
-  if (Number(network.chainId) !== cfg.chainId) throw new Error(`RPC chain mismatch: expected ${cfg.chainId}, got ${network.chainId}`);\n  for (const venue of cfg.venues) {\n    const target = venue.type === "v2" ? venue.router : venue.quoter;\n    if (!target || (await provider.getCode(target, block)) === "0x") throw new Error(`Configured ${venue.name} contract has no code at ${target}`);\n  }
+  if (Number(network.chainId) !== cfg.chainId) throw new Error(`RPC chain mismatch: expected ${cfg.chainId}, got ${network.chainId}`);
+  for (const venue of cfg.venues) {
+    const target = venue.type === "v2" ? venue.router : venue.quoter;
+    if (!target || (await provider.getCode(target, block)) === "0x") throw new Error(`Configured ${venue.name} contract has no code at ${target}`);
+  }
   const poolProvider = new ethers.Contract(AAVE_PROVIDER, AAVE_PROVIDER_ABI, provider);
   const poolAddress = await poolProvider.getPool({ blockTag: block });
   const pool = new ethers.Contract(poolAddress, AAVE_POOL_ABI, provider);
@@ -110,7 +115,9 @@ async function main() {
                   gasPriceWei: gasPrice?.toString() ?? null,
                   gasAdjusted: true,
                   quoteBlock: block,
-                  l1DataFeeIncluded: false,\n                  executionReady: buy.type === "v2" && sell.type === "v2",\n                  note: "Indicative same-block quotes only. Estimated gas covers L2 execution only; Base L1 data fee is NOT included. Re-quote, calculate L1 fee from final calldata, and simulate before any execution."
+                  l1DataFeeIncluded: false,
+                  executionReady: buy.type === "v2" && sell.type === "v2",
+                  note: "Indicative same-block quotes only. Estimated gas covers L2 execution only; Base L1 data fee is NOT included. Re-quote, calculate L1 fee from final calldata, and simulate before any execution."
                 });
               }
             }
@@ -129,10 +136,16 @@ async function main() {
   if (rows.length) {
     const top = rows.slice(0, 5).map(r =>
       `${r.base} ${r.amountIn} | ${r.buyVenue} -> ${r.sellVenue} | estimated net: ${r.estimatedNetProfit}`
-    ).join("\n");
-    await notifyTelegram(`FlashArb scanner: ${rows.length} candidate(s) at block ${block}\n\n${top}\n\nQuotes are indicative only. NOT EXECUTABLE / NOT GUARANTEED.`);
+    ).join("
+");
+    await notifyTelegram(`FlashArb scanner: ${rows.length} candidate(s) at block ${block}
+
+${top}
+
+Quotes are indicative only. NOT EXECUTABLE / NOT GUARANTEED.`);
   }
-  console.log(`Scanned block ${block}. ${rows.length} preliminary candidate(s) written to opportunities.json`);\n  if (rows.some(r => !r.executionReady)) console.log("Some routes use V3 quotes and are research-only; the current executor supports V2 routes only.");
+  console.log(`Scanned block ${block}. ${rows.length} preliminary candidate(s) written to opportunities.json`);
+  if (rows.some(r => !r.executionReady)) console.log("Some routes use V3 quotes and are research-only; the current executor supports V2 routes only.");
   for (const r of rows.slice(0, 20)) console.log(`${r.base} ${r.amountIn} | ${r.buyVenue} -> ${r.sellVenue} | net=${r.estimatedNetProfit}`);
   if (!rows.length) console.log("No candidates passed configured thresholds. This is normal.");
 }
