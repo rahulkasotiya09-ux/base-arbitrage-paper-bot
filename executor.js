@@ -176,13 +176,14 @@ async function main() {
   const receipt = await response.wait();
   if (!receipt || receipt.status !== 1) throw new Error("Transaction reverted");
   const actualL2 = receipt.gasUsed * (receipt.gasPrice ?? cap);
-  const actualL1 = await getL1Fee(receipt.logs ? tx.data ?? "0x" : tx.data ?? "0x");
   console.log(JSON.stringify({
     transactionHash: receipt.hash,
     blockNumber: receipt.blockNumber,
     actualL2GasCostWei: actualL2.toString(),
-    estimatedL1DataFeeWeiAtExecution: actualL1.toString(),
-    note: "The on-chain contract enforces the buffered gas reserve and USD-cent profit floor. Review the receipt and ArbitrageCompleted event before withdrawing."
+    receiptL1FeeWei: receipt.l1Fee?.toString() ?? null,
+    receiptL1GasUsed: receipt.l1GasUsed?.toString() ?? null,
+    receiptL1GasPrice: receipt.l1GasPrice?.toString() ?? null,
+    note: "The contract enforced the buffered gas reserve and USD-cent profit floor before repayment. Verify the receipt's L1 fee fields and ArbitrageCompleted event before withdrawing."
   }, null, 2));
 }
 main().catch(e => {
