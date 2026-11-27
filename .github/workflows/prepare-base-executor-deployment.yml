@@ -32,6 +32,14 @@ jobs:
       - name: Compile contract and deployment script
         run: forge build
 
+      - name: Read deployer ETH balance (read-only)
+        env:
+          BASE_RPC_URL: ${{ secrets.BASE_RPC_URL || 'https://mainnet.base.org' }}
+        run: |
+          set -euo pipefail
+          echo "Deployer: 0x88073Ad37F9e1cb6E09048c57fAe4A70383D9aBb"
+          cast balance 0x88073Ad37F9e1cb6E09048c57fAe4A70383D9aBb --ether --rpc-url "$BASE_RPC_URL"
+
       - name: Simulate Base deployment without signing or broadcasting
         env:
           BASE_RPC_URL: ${{ secrets.BASE_RPC_URL || 'https://mainnet.base.org' }}
