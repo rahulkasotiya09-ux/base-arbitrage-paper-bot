@@ -20,7 +20,7 @@ function run(script, label, args = []) {
 
 async function cycle() {
   const started = Date.now();
-  console.log(`\\n[FlashArb] Scan started ${new Date().toISOString()}`);
+  console.log(`\n[FlashArb] Scan started ${new Date().toISOString()}`);
   run("scanner.js", "Scanner");
   if (hasExecutor) {
     console.log(live ? "[FlashArb] LIVE MODE: executor will re-quote, estimate, simulate, then broadcast only if every guard passes." : "[FlashArb] Simulation mode: no transaction will be sent.");
@@ -32,8 +32,12 @@ async function cycle() {
 }
 
 do {
-  try { await cycle(); }
-  catch (error) { console.error("[FlashArb] Cycle failed:", error.message); }
+  try {
+    await cycle();
+  } catch (error) {
+    console.error("[FlashArb] Cycle failed:", error.message);
+    process.exitCode = 1;
+  }
   if (once) break;
   console.log(`[FlashArb] Sleeping ${intervalMs} ms. Stop with Ctrl+C.`);
   await new Promise(resolve => setTimeout(resolve, intervalMs));
