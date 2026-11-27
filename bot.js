@@ -6,10 +6,13 @@ if (!Number.isSafeInteger(intervalMs) || intervalMs < 15000) {
   throw new Error("SCAN_INTERVAL_MS must be an integer of at least 15000");
 }
 const once = process.env.RUN_ONCE === "true";
-const hasExecutor = Boolean(process.env.EXECUTOR_ADDRESS && process.env.WALLET_PRIVATE_KEY);
+const hasExecutor = Boolean(process.env.EXECUTOR_ADDRESS && process.env.EXECUTOR_CODE_HASH && process.env.WALLET_PRIVATE_KEY && process.env.RPC_URL);
+const live = process.env.LIVE_TRADING === "true";
+const liveConfirmed = process.env.CONFIRM_LIVE_TRADING === "I_ACCEPT_TRANSACTION_RISK";
+if (live && !liveConfirmed) throw new Error("Live mode requires explicit CONFIRM_LIVE_TRADING acknowledgement.");
 
-function run(script, label) {
-  const result = spawnSync(process.execPath, [script], { stdio: "inherit", env: process.env });
+function run(script, label, args = []) {
+  const result = spawnSync(process.execPath, [script, ...args], { stdio: "inherit", env: process.env });
   if (result.error) throw result.error;
   if (result.status !== 0) throw new Error(`${label} exited with status ${result.status}`);
 }
@@ -19,8 +22,8 @@ async function cycle() {
   console.log(`\\n[FlashArb] Scan started ${new Date().toISOString()}`);
   run("scanner.js", "Scanner");
   if (hasExecutor) {
-    console.log("[FlashArb] Contract and wallet configured; running full transaction simulation.");
-    run("executor.js", "Executor");
+    console.log(live ? "[FlashArb] LIVE MODE: executor will re-quote, estimate, simulate, then broadcast only if every guard passes." : "[FlashArb] Simulation mode: no transaction will be sent.");
+    run("executor.js", "Executor", live ? ["--broadcast"] : []);
   } else {
     console.log("[FlashArb] SCAN-ONLY: no executor address and wallet configured. No transaction can be sent.");
   }
