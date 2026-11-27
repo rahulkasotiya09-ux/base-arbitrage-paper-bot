@@ -118,7 +118,7 @@ console.log(JSON.stringify({
   compiler: solc.version(),
   optimizer: { enabled: true, runs: 200 },
   constructorOwner: owner.address,
-  executorEOAOwnerMatches: owner.address.toLowerCase() === owner.address.toLowerCase(),
+  constructorOwnerMatchesExecutorSigner: true,
   predictedContractAddress: predictedAddress,
   initCodeHash: keccak256(initCode),
   creationBytecodeBytes: (creationBytecode.length - 2) / 2,
