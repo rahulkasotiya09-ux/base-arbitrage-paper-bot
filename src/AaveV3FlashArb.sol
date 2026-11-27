@@ -40,10 +40,12 @@ interface IV2Router {
 /// @dev Still experimental: use only on a fork until independently audited.
 contract AaveV3FlashArb {
     address public immutable owner;
+    address public immutable wrappedNative;
     IAaveV3Pool public immutable pool;
 
     mapping(address => bool) public approvedToken;
     mapping(address => bool) public approvedRouter;
+    mapping(address => address) public routerFactory;
 
     bool private active;
     bool private callbackSeen;
@@ -85,12 +87,14 @@ contract AaveV3FlashArb {
         _;
     }
 
-    constructor(address addressesProvider, address ownerAddress) {
+    constructor(address addressesProvider, address ownerAddress, address wrappedNativeAddress) {
         require(addressesProvider != address(0) && addressesProvider.code.length > 0, "BAD_PROVIDER");
         require(ownerAddress != address(0), "ZERO_OWNER");
+        require(wrappedNativeAddress != address(0) && wrappedNativeAddress.code.length > 0, "BAD_WRAPPED_NATIVE");
         address poolAddress = IPoolAddressesProvider(addressesProvider).getPool();
         require(poolAddress != address(0) && poolAddress.code.length > 0, "BAD_POOL");
         owner = ownerAddress;
+        wrappedNative = wrappedNativeAddress;
         pool = IAaveV3Pool(poolAddress);
     }
 
@@ -102,6 +106,13 @@ contract AaveV3FlashArb {
 
     function setRouter(address router, bool approved) external onlyOwner whenIdle {
         require(router != address(0) && router.code.length > 0, "BAD_ROUTER");
+        if (approved) {
+            address factory = IV2Router(router).factory();
+            require(factory != address(0) && factory.code.length > 0, "BAD_FACTORY");
+            routerFactory[router] = factory;
+        } else {
+            delete routerFactory[router];
+        }
         approvedRouter[router] = approved;
         emit RouterApproval(router, approved);
     }
@@ -111,7 +122,7 @@ contract AaveV3FlashArb {
         uint256 amount,
         Route calldata route
     ) external onlyOwner whenIdle {
-        require(asset != address(0), "ZERO_ASSET");
+        require(asset == wrappedNative, "ASSET_MUST_BE_WRAPPED_NATIVE");
         require(approvedToken[asset], "ASSET_NOT_ALLOWED");
         require(approvedToken[route.intermediateToken], "MID_NOT_ALLOWED");
         require(asset != route.intermediateToken, "SAME_TOKEN");
@@ -154,7 +165,7 @@ contract AaveV3FlashArb {
         require(msg.sender == address(pool), "ONLY_POOL");
         require(initiator == address(this), "BAD_INITIATOR");
         require(active && !callbackSeen, "UNEXPECTED_CALLBACK");
-        require(asset == loanAsset && amount == loanAmount, "LOAN_MISMATCH");
+        require(asset == loanAsset && asset == wrappedNative && amount == loanAmount, "LOAN_MISMATCH");
         callbackSeen = true;
 
         Route memory r = abi.decode(params, (Route));
@@ -195,6 +206,8 @@ contract AaveV3FlashArb {
         uint256 deadline
     ) internal returns (uint256 actualAmountOut) {
         require(approvedRouter[router] && router.code.length > 0, "BAD_ROUTER");
+        address factory = IV2Router(router).factory();
+        require(factory != address(0) && factory == routerFactory[router] && factory.code.length > 0, "FACTORY_MISMATCH");
         uint256 inputBefore = IERC20(tokenIn).balanceOf(address(this));
         uint256 outputBefore = IERC20(tokenOut).balanceOf(address(this));
 
