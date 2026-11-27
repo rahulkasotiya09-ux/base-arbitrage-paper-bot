@@ -110,6 +110,19 @@ contract AaveV3ForkTest is Test {
         receiver.start(WETH, 0.01 ether, route);
     }
 
+
+    function testCanAssignOwnershipToSponsoredSmartAccount() public {
+        vm.createSelectFork(vm.envString("RPC_URL"));
+        address smartAccount = address(0xCAFE);
+        AaveV3FlashArb receiver = new AaveV3FlashArb(ADDRESSES_PROVIDER, smartAccount);
+        assertEq(receiver.owner(), smartAccount);
+        vm.prank(smartAccount);
+        receiver.setToken(WETH, true);
+        assertTrue(receiver.approvedToken(WETH));
+        vm.expectRevert(bytes("NOT_OWNER"));
+        receiver.setToken(USDC, true);
+    }
+
     function testOnlyOwnerCanConfigure() public {
         vm.createSelectFork(vm.envString("RPC_URL"));
         AaveV3FlashArb receiver = new AaveV3FlashArb(ADDRESSES_PROVIDER, address(this));
