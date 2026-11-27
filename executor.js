@@ -128,13 +128,15 @@ async function main() {
   if (freshBuyAmounts.length !== 2 || freshBuyAmounts[1] <= 0n) {
     throw new Error("Fresh buy quote is invalid");
   }
+  const freshMinIntermediateOut = minOut(freshBuyAmounts[1]);
+  // Price the second hop using the minimum intermediate amount accepted from
+  // hop one, so both slippage bounds remain jointly satisfiable.
   const freshSellAmounts = await sellRouter.getAmountsOut(
-    freshBuyAmounts[1], [intermediate, asset]
+    freshMinIntermediateOut, [intermediate, asset]
   );
   if (freshSellAmounts.length !== 2 || freshSellAmounts[1] <= 0n) {
     throw new Error("Fresh sell quote is invalid");
   }
-  const freshMinIntermediateOut = minOut(freshBuyAmounts[1]);
   const freshMinFinalOut = minOut(freshSellAmounts[1]);
 
   const aaveProvider = new ethers.Contract(cfg.aaveAddressesProvider, [
