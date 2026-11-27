@@ -2,10 +2,6 @@ name: Prepare Base executor deployment (simulation only)
 
 on:
   workflow_dispatch:
-  push:
-    paths:
-      - '.github/workflows/prepare-base-executor-deployment.yml'
-
 permissions:
   contents: read
 
