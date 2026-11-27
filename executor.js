@@ -14,7 +14,7 @@ const provider = new ethers.JsonRpcProvider(process.env.RPC_URL, cfg.chainId);
 const wallet = new ethers.Wallet(process.env.WALLET_PRIVATE_KEY, provider);
 const executor = new ethers.Contract(process.env.EXECUTOR_ADDRESS, [
   "function owner() view returns (address)",
-  "function start(address,uint256,(address,address,address,uint256,uint256,uint256,uint256,uint256))"
+  "function start(address asset,uint256 amount,(address intermediateToken,address buyRouter,address sellRouter,uint256 minIntermediateOut,uint256 minFinalOut,uint256 gasCostInAsset,uint256 minProfit,uint256 deadline) route)"
 ], wallet);
 const routerAbi = ["function factory() view returns (address)"];
 const l1Oracle = "0x420000000000000000000000000000000000000F";
