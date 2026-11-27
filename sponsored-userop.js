@@ -65,6 +65,8 @@ const publicClient = createPublicClient({
   chain: baseSepolia,
   transport: http(process.env.BASE_SEPOLIA_RPC_URL)
 });
+const rpcChainId = await publicClient.getChainId();
+if (rpcChainId !== baseSepolia.id) throw new Error(`RPC chain mismatch: expected Base Sepolia ${baseSepolia.id}, received ${rpcChainId}`);
 const pimlicoUrl = `https://api.pimlico.io/v2/${baseSepolia.id}/rpc?apikey=${process.env.PIMLICO_API_KEY}`;
 const pimlicoClient = createPimlicoClient({
   chain: baseSepolia,
