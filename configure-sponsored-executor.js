@@ -18,7 +18,7 @@ if (!/^0x[0-9a-fA-F]{64}$/.test(process.env.WALLET_PRIVATE_KEY)) {
 function addresses(name) {
   const values = process.env[name].split(",").map(x => x.trim()).filter(Boolean);
   if (values.length === 0 || values.some(x => !isAddress(x))) throw new Error(`${name} must be a comma-separated list of valid addresses`);
-  return [...new Set(values.map(getAddress))];
+  return [...new Set(values.map(value => getAddress(value)))];
 }
 
 const owner = privateKeyToAccount(process.env.WALLET_PRIVATE_KEY);
