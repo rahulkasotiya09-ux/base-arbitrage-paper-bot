@@ -112,6 +112,37 @@ contract AaveV3ForkTest is Test {
     }
 
 
+    function testForkLiveReservesRejectSameVenueLossMakingRoundTrip() public {
+        vm.createSelectFork(vm.envString("BASE_RPC_URL"));
+        AaveV3FlashArb receiver = new AaveV3FlashArb(ADDRESSES_PROVIDER, address(this));
+
+        address pair = IUniswapV2Factory(IV2Router(UNISWAP_V2_ROUTER).factory()).getPair(WETH, USDC);
+        assertTrue(pair.code.length > 0, "live WETH/USDC pair missing");
+        uint256 loanAmount = 0.000001 ether;
+        uint256 poolLiquidity = IERC20(WETH).balanceOf(address(receiver.pool()));
+        assertGe(poolLiquidity, loanAmount, "Aave WETH liquidity too low for live-state test");
+
+        receiver.setToken(WETH, true);
+        receiver.setToken(USDC, true);
+        receiver.setRouter(UNISWAP_V2_ROUTER, true);
+
+        // Do not alter pair reserves or balances: use the current Base fork state.
+        // Same-pool round trip pays swap fees and must not pass the profit gate.
+        AaveV3FlashArb.Route memory route = AaveV3FlashArb.Route({
+            intermediateToken: USDC,
+            buyRouter: UNISWAP_V2_ROUTER,
+            sellRouter: UNISWAP_V2_ROUTER,
+            minIntermediateOut: 1,
+            minFinalOut: 1,
+            gasCostInAsset: 1,
+            minProfit: 1,
+            deadline: block.timestamp + 60
+        });
+
+        vm.expectRevert(bytes("NOT_PROFITABLE"));
+        receiver.start(WETH, loanAmount, route);
+    }
+
     function testCanAssignOwnershipToSponsoredSmartAccount() public {
         vm.createSelectFork(vm.envString("BASE_RPC_URL"));
         address smartAccount = address(0xCAFE);
