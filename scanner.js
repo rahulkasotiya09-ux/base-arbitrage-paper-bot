@@ -2,6 +2,7 @@ import "dotenv/config";
 import fs from "node:fs";
 import { ethers } from "ethers";
 
+// Scanner is advisory only; executor independently re-quotes before any simulation.
 const cfg = JSON.parse(fs.readFileSync(new URL("./config.json", import.meta.url), "utf8"));
 const rpc = process.env.RPC_URL;
 if (!rpc) throw new Error("Set RPC_URL in .env (use a trusted Ethereum RPC endpoint).");
