@@ -2,6 +2,8 @@ name: Base Mainnet read-only arbitrage scan
 
 on:
   workflow_dispatch:
+  push:
+    branches: [dev/flashloan-bot-build]
   schedule:
     - cron: "*/5 * * * *"
 
@@ -35,7 +37,7 @@ jobs:
         env:
           BASE_RPC_URL: ${{ secrets.BASE_RPC_URL || 'https://mainnet.base.org' }}
         run: node mainnet-preflight.js
-      - name: Scan Base V2 routes (read-only)
+      - name: Scan Base V2 and V3 routes (read-only)
         env:
           RPC_URL: ${{ secrets.BASE_RPC_URL || 'https://mainnet.base.org' }}
         run: npm run scan
