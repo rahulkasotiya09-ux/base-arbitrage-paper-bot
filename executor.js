@@ -23,6 +23,7 @@ const executor = new ethers.Contract(ethers.getAddress(process.env.EXECUTOR_ADDR
   "function routerFactory(address) view returns (address)",
   "function approvedToken(address) view returns (bool)",
   "function approvedRouter(address) view returns (bool)",
+  "event ArbitrageCompleted(address indexed asset,address indexed intermediateToken,uint256 principal,uint256 premium,uint256 grossProfit)",
   "function start(address asset,uint256 amount,(address intermediateToken,address buyRouter,address sellRouter,uint256 minIntermediateOut,uint256 minFinalOut,uint256 gasReserveInAsset,uint256 minProfit,uint256 deadline) route)"
 ], wallet);
 const routerAbi = [
@@ -298,15 +299,34 @@ async function main() {
   console.log("Broadcast transaction:", response.hash);
   const receipt = await response.wait();
   if (!receipt || receipt.status !== 1) throw new Error("Transaction reverted");
-  const actualL2 = receipt.gasUsed * (receipt.gasPrice ?? cap);
+  const effectiveGasPrice = receipt.effectiveGasPrice ?? receipt.gasPrice ?? cap;
+  const actualL2 = receipt.gasUsed * effectiveGasPrice;
+  // Base receipts may omit l1Fee depending on the RPC. Prefer the receipt field;
+  // otherwise query the Base L1 fee oracle for this exact calldata and label it estimated.
+  const l1FeeIsReceipt = receipt.l1Fee !== undefined && receipt.l1Fee !== null;
+  const actualL1 = l1FeeIsReceipt ? receipt.l1Fee : await getL1Fee(tx.data ?? "0x");
+  let grossProfit = null;
+  for (const log of receipt.logs) {
+    if (log.address.toLowerCase() !== (await executor.getAddress()).toLowerCase()) continue;
+    try {
+      const parsed = executor.interface.parseLog(log);
+      if (parsed?.name === "ArbitrageCompleted") grossProfit = parsed.args.grossProfit;
+    } catch {}
+  }
+  const actualNet = grossProfit === null ? null : grossProfit - actualL2 - actualL1;
+  const actualNetUsd = actualNet === null ? null :
+    Number(actualNet) * Number(price.ethUsdAnswer) / (10 ** (18 + price.feedDecimals));
   console.log(JSON.stringify({
     transactionHash: receipt.hash,
     blockNumber: receipt.blockNumber,
     actualL2GasCostWei: actualL2.toString(),
-    receiptL1FeeWei: receipt.l1Fee?.toString() ?? null,
-    receiptL1GasUsed: receipt.l1GasUsed?.toString() ?? null,
-    receiptL1GasPrice: receipt.l1GasPrice?.toString() ?? null,
-    note: "The contract enforces gross surplus >= buffered L1/L2 gas reserve + USD-cent floor. The reserve is not spent by the contract and remains part of withdrawable gross surplus. Verify actual receipt fees before treating profit as realized."
+    actualL1FeeWei: actualL1.toString(),
+    l1FeeSource: l1FeeIsReceipt ? "receipt" : "post-receipt Base oracle estimate; verify independently",
+    grossContractSurplusWeth: grossProfit === null ? null : ethers.formatEther(grossProfit),
+    estimatedNetProfitAfterL1AndL2Weth: actualNet === null ? null : ethers.formatEther(actualNet),
+    estimatedNetProfitAfterL1AndL2Usd: actualNetUsd === null ? null : actualNetUsd.toFixed(6),
+    minimumRequiredNetProfitUsd: Number(minProfitUsdCents) / 100,
+    note: "The contract's gas reserve is a pre-trade safety threshold, not a fee paid by the contract. EOA gas is deducted here from gross contract surplus. If L1 fee came from the oracle fallback, the net figure is an estimate, not an exact historical receipt value."
   }, null, 2));
 }
 main().catch(e => {
