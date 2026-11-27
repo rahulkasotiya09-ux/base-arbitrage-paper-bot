@@ -1,4 +1,4 @@
-name: Base mainnet read-only deployment gas estimate
+name: Base mainnet deployment estimate diagnostic
 
 on:
   workflow_dispatch:
@@ -14,30 +14,10 @@ permissions:
 jobs:
   estimate:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
     steps:
-      - name: Confirm workflow runner
-        run: echo "Deployment estimate workflow started"
-
-      - name: Checkout bot source
-        uses: actions/checkout@v4
-        with:
-          ref: dev/flashloan-bot-build
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-
-      - name: Install dependencies
-        run: npm install --no-audit --no-fund
-
-      - name: Check estimate script syntax
-        run: node --check base-mainnet-readonly-deploy-estimate.js
-
-      - name: Estimate Base Mainnet deployment cost (read-only)
-        env:
-          BASE_RPC_URL: ${{ secrets.BASE_RPC_URL }}
-          AAVE_POOL_ADDRESSES_PROVIDER: 0xe20fCBdBfFC4Dd138cE8b2E6FBb6CB49777ad64
-          AAVE_POOL_EXPECTED: 0xA238Dd80C259a72e81d7e4664a9801593F98d1c5
-        run: node base-mainnet-readonly-deploy-estimate.js
+      - name: Confirm Actions runner starts
+        run: |
+          echo "Deployment workflow runner started successfully."
+          echo "Event: ${{ github.event_name }}"
+          echo "Branch: ${{ github.ref_name }}"
+          echo "This is a read-only diagnostic; no wallet or transaction is used."
