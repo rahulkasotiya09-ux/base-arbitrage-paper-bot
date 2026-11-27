@@ -20,11 +20,15 @@ const executor = new ethers.Contract(process.env.EXECUTOR_ADDRESS, [
   "function owner() view returns (address)",
   "function start(address asset,uint256 amount,(address intermediateToken,address buyRouter,address sellRouter,uint256 minIntermediateOut,uint256 minFinalOut,uint256 gasCostInAsset,uint256 minProfit,uint256 deadline) route)"
 ], wallet);
-const routerAbi = ["function factory() view returns (address)"];
+const routerAbi = [
+  "function factory() view returns (address)",
+  "function getAmountsOut(uint256 amountIn,address[] calldata path) view returns (uint256[] memory amounts)"
+];
 const l1Oracle = "0x420000000000000000000000000000000000000F";
 const l1Iface = new ethers.Interface(["function getL1Fee(bytes data) view returns (uint256)"]);
 const priceFeedAbi = [
   "function decimals() view returns (uint8)",
+  "function description() view returns (string)",
   "function latestRoundData() view returns (uint80 roundId,int256 answer,uint256 startedAt,uint256 updatedAt,uint80 answeredInRound)"
 ];
 const slip = BigInt(process.env.SLIPPAGE_BPS ?? "30");
@@ -45,7 +49,12 @@ async function getMinimumProfitWeth() {
   }
   const feedAddress = ethers.getAddress(cfg.ethUsdFeed);
   const feed = new ethers.Contract(feedAddress, priceFeedAbi, provider);
-  const [decimals, round] = await Promise.all([feed.decimals(), feed.latestRoundData()]);
+  const [decimals, description, round] = await Promise.all([
+    feed.decimals(), feed.description(), feed.latestRoundData()
+  ]);
+  if (description.trim().toUpperCase() !== "ETH / USD") {
+    throw new Error(`Unexpected Chainlink feed description: ${description}`);
+  }
   const [roundId, answer, , updatedAt, answeredInRound] = round;
   const now = BigInt(Math.floor(Date.now() / 1000));
   if (answer <= 0n || updatedAt === 0n || answeredInRound < roundId ||
@@ -77,7 +86,7 @@ async function main() {
     throw new Error("Opportunity quotes are stale or from the wrong chain");
   }
   const c = output.candidates.find(x => x.base === "WETH" && x.executorCompatible &&
-    x.buyRouter && x.sellRouter && x.intermediateOutRaw && x.finalOutRaw);
+    x.buyRouter && x.sellRouter && x.intermediate);
   if (!c) throw new Error("No V2/V2 WETH opportunity passed scanner filters");
 
   const base = cfg.tokens.WETH, mid = cfg.tokens[c.intermediate];
@@ -102,7 +111,51 @@ async function main() {
     throw new Error("Live executor only supports the configured wrapped-native asset as the gas-reserve denomination");
   }
 
+  const allowedAmounts = (cfg.scanAmounts ?? [])
+    .filter(x => x.token === "WETH")
+    .flatMap(x => x.amounts.map(String));
+  if (!allowedAmounts.includes(String(c.amountIn))) {
+    throw new Error("Candidate loan amount is not in the configured scan allowlist");
+  }
   const amount = ethers.parseUnits(c.amountIn, base.decimals);
+  if (amount <= 0n) throw new Error("Candidate amount must be positive");
+
+  // Never trust the scanner's stored quote for execution. Re-quote both hops
+  // from the configured routers immediately before estimating and simulating.
+  const buyRouter = new ethers.Contract(buy, routerAbi, provider);
+  const sellRouter = new ethers.Contract(sell, routerAbi, provider);
+  const freshBuyAmounts = await buyRouter.getAmountsOut(amount, [asset, intermediate]);
+  if (freshBuyAmounts.length !== 2 || freshBuyAmounts[1] <= 0n) {
+    throw new Error("Fresh buy quote is invalid");
+  }
+  const freshSellAmounts = await sellRouter.getAmountsOut(
+    freshBuyAmounts[1], [intermediate, asset]
+  );
+  if (freshSellAmounts.length !== 2 || freshSellAmounts[1] <= 0n) {
+    throw new Error("Fresh sell quote is invalid");
+  }
+  const freshMinIntermediateOut = minOut(freshBuyAmounts[1]);
+  const freshMinFinalOut = minOut(freshSellAmounts[1]);
+
+  const aaveProvider = new ethers.Contract(cfg.aaveAddressesProvider, [
+    "function getPool() view returns (address)"
+  ], provider);
+  const poolAddress = await aaveProvider.getPool();
+  if (await provider.getCode(poolAddress) === "0x") {
+    throw new Error("Aave Pool proxy has no code");
+  }
+  const pool = new ethers.Contract(poolAddress, [
+    "function FLASHLOAN_PREMIUM_TOTAL() view returns (uint128)"
+  ], provider);
+  const [flashPremiumBps, availableWeth] = await Promise.all([
+    pool.FLASHLOAN_PREMIUM_TOTAL(),
+    new ethers.Contract(asset, ["function balanceOf(address) view returns (uint256)"], provider)
+      .balanceOf(poolAddress)
+  ]);
+  if (availableWeth < amount) {
+    throw new Error("Aave WETH liquidity is below the requested flash-loan amount");
+  }
+
   const fee = await provider.getFeeData();
   const feeFields = fee.maxFeePerGas
     ? { maxFeePerGas: fee.maxFeePerGas, maxPriorityFeePerGas: fee.maxPriorityFeePerGas ?? 0n }
@@ -117,8 +170,8 @@ async function main() {
   // Any RPC instability or failure to converge causes a safe refusal.
   const route = {
     intermediateToken: intermediate, buyRouter: buy, sellRouter: sell,
-    minIntermediateOut: minOut(BigInt(c.intermediateOutRaw)),
-    minFinalOut: minOut(BigInt(c.finalOutRaw)),
+    minIntermediateOut: freshMinIntermediateOut,
+    minFinalOut: freshMinFinalOut,
     gasCostInAsset: 1n, minProfit: price.minimumWethWei, deadline
   };
   const populate = r => executor.start.populateTransaction(asset, amount, r);
@@ -180,6 +233,9 @@ async function main() {
     minimumNetProfitWeth: ethers.formatEther(price.minimumWethWei),
     ethUsdAnswer: price.ethUsdAnswer,
     ethUsdFeedUpdatedAt: price.updatedAt,
+    aaveFlashLoanPremiumBps: flashPremiumBps.toString(),
+    freshBuyQuoteWethToIntermediate: freshBuyAmounts[1].toString(),
+    freshSellQuoteIntermediateToWeth: freshSellAmounts[1].toString(),
     estimatedGas: gas.toString(),
     maxL2GasCostWei: l2Cost.toString(),
     finalCalldataL1FeeWei: l1Fee.toString(),
@@ -187,7 +243,7 @@ async function main() {
     bufferedGasReserveWeth: ethers.formatEther(reserve),
     walletEthBalance: ethers.formatEther(walletBalance),
     exactFinalTransactionSimulation: "PASSED",
-    noUnaccountedProtocolFeeKnown: true
+    feeAccounting: "Aave premium included; both swap fees are reflected in fresh router quotes; L2/L1 network fees buffered separately. Reverted transactions can still consume gas."
   };
   console.log(JSON.stringify(report, null, 2));
   if (!LIVE) {
