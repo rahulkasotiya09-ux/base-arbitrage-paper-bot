@@ -107,7 +107,7 @@ const creationBytecode = "0x" + artifact.evm.bytecode.object;
 if (creationBytecode === "0x") throw new Error("Empty creation bytecode");
 
 // Direct EOA deployment would set owner to the user's existing EOA.
-const constructorArgs = `0x${provider.slice(2).padStart(64, "0")}${wallet.slice(2).padStart(64, "0")}`;
+const constructorArgs = `0x${provider.slice(2).padStart(64, "0")}${wallet.slice(2).padStart(64, "0")}${weth.slice(2).padStart(64, "0")}`;
 const initCode = `0x${creationBytecode.slice(2)}${constructorArgs.slice(2)}`;
 const [gasEstimate, feeData] = await Promise.all([
   client.estimateGas({ account: wallet, data: initCode }),
@@ -138,6 +138,7 @@ console.log(JSON.stringify({
   chainlinkEthUsdUpdatedAt: updatedAt.toString(),
   configuredTokensAndDexRouterFactoryMappings: "verified on Base Mainnet",
   constructorOwner: wallet,
+  constructorWrappedNative: weth,
   compiler: solc.version(),
   optimizer: { enabled: true, runs: 200 },
   creationBytecodeBytes: (creationBytecode.length - 2) / 2,
