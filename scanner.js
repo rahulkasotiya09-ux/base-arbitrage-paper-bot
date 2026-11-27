@@ -72,6 +72,10 @@ async function main() {
   const pool = new ethers.Contract(poolAddress, AAVE_POOL_ABI, provider);
   const premiumBps = BigInt(await pool.FLASHLOAN_PREMIUM_TOTAL({ blockTag: block }));
   const rows = [];
+  const stats = {
+    routeQuotesAttempted: 0, quoteFailures: 0, insufficientFlashLiquidity: 0,
+    rejectedBeforeGas: 0, rejectedAfterGas: 0, profitableIndicative: 0
+  };
   for (const amounts of cfg.scanAmounts) {
     const baseToken = cfg.tokens[amounts.token];
     if (!baseToken) continue;
@@ -81,22 +85,29 @@ async function main() {
       if (midName === amounts.token || midToken.address.toLowerCase() === baseToken.address.toLowerCase()) continue;
       for (const amountText of amounts.amounts) {
         const amountIn = parse(amountText, baseToken.decimals);
-        if (amountIn > reserveBalance) continue;
+        if (amountIn > reserveBalance) { stats.insufficientFlashLiquidity++; continue; }
         for (const buy of cfg.venues) for (const sell of cfg.venues) {
           if (buy.name === sell.name) continue;
           for (const buyFee of feeOptions(buy)) {
+            stats.routeQuotesAttempted++;
             const midOut = await quote(buy, baseToken, midToken, amountIn, buyFee, block);
-            if (midOut === null || midOut === 0n) continue;
+            if (midOut === null || midOut === 0n) { stats.quoteFailures++; continue; }
             for (const sellFee of feeOptions(sell)) {
+              stats.routeQuotesAttempted++;
               const baseOut = await quote(sell, midToken, baseToken, midOut, sellFee, block);
-              if (baseOut === null) continue;
+              if (baseOut === null) { stats.quoteFailures++; continue; }
               const premium = amountIn * premiumBps / 10000n;
-              const gross = baseOut - amountIn - premium;
+              const amountOwed = amountIn + premium;
+              // Losing routes are normal; avoid BigInt underflow and keep scanning.
+              if (baseOut <= amountOwed) { stats.rejectedBeforeGas++; continue; }
+              const gross = baseOut - amountOwed;
               const gasPrice = feeData.maxFeePerGas ?? feeData.gasPrice;
               if (baseToken.address.toLowerCase() !== cfg.wrappedNative.toLowerCase() || !gasPrice) continue;
               const gasCostBase = BigInt(cfg.gasLimitEstimate) * gasPrice;
+              if (gross <= gasCostBase) { stats.rejectedAfterGas++; continue; }
               const net = gross - gasCostBase;
               if (net > 0n) {
+                stats.profitableIndicative++;
                 rows.push({
                   block, base: amounts.token, intermediate: midName, amountIn: amountText,
                   buyVenue: buy.name, buyFee, sellVenue: sell.name, sellFee,
@@ -131,7 +142,13 @@ async function main() {
     const bv = ethers.parseUnits(b.estimatedNetProfit, cfg.tokens[b.base].decimals);
     return av === bv ? 0 : (av > bv ? -1 : 1);
   });
-  const output = {chainId: cfg.chainId, block, checkedAt: new Date().toISOString(), candidates: rows};
+  const output = {
+    chainId: cfg.chainId, block, checkedAt: new Date().toISOString(),
+    flashLoanPremiumBps: premiumBps.toString(),
+    gasPriceWei: (feeData.maxFeePerGas ?? feeData.gasPrice ?? 0n).toString(),
+    gasLimitEstimate: cfg.gasLimitEstimate,
+    stats, candidates: rows
+  };
   fs.writeFileSync("opportunities.json", JSON.stringify(output, null, 2));
   if (rows.length) {
     const top = rows.slice(0, 5).map(r =>
@@ -142,6 +159,7 @@ async function main() {
   console.log(`Scanned block ${block}. ${rows.length} preliminary candidate(s) written to opportunities.json`);
   if (rows.some(r => !r.executionReady)) console.log("Some routes use V3 quotes and are research-only; the current executor supports V2 routes only.");
   for (const r of rows.slice(0, 20)) console.log(`${r.base} ${r.amountIn} | ${r.buyVenue} -> ${r.sellVenue} | net=${r.estimatedNetProfit}`);
+  console.log("Scan diagnostics:", JSON.stringify(stats));
   if (!rows.length) console.log("No candidates had positive indicative profit after Aave premium and estimated L2 gas. Final L1 fee and safety buffer are checked by executor.");
 }
 main().catch(e => { console.error(e); process.exitCode = 1; });
