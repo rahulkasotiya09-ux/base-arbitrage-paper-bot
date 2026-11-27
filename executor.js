@@ -125,6 +125,7 @@ async function main() {
   let tx;
   let gas = 0n;
   let l1Fee = 0n;
+  let l2Cost = 0n;
   let reserve = 1n;
   let converged = false;
   for (let i = 0; i < 12; i++) {
@@ -160,6 +161,7 @@ async function main() {
   }
   gas = finalGas;
   l1Fee = finalL1Fee;
+  l2Cost = finalGas * cap;
   reserve = finalReserve;
 
   const walletBalance = await provider.getBalance(wallet.address);
