@@ -14,8 +14,6 @@ jobs:
   static-and-contract-checks:
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    env:
-      HAS_BASE_RPC: ${{ secrets.BASE_RPC_URL != '' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -24,12 +22,20 @@ jobs:
       - name: Install Node dependencies
         run: npm install
       - name: Check JavaScript syntax
-        run: npm run check
+        run: npm run check && node --check base-mainnet-readonly-deploy-estimate.js
+      - name: Audit production dependencies
+        run: npm audit --omit=dev --audit-level=high
       - uses: foundry-rs/foundry-toolchain@v1
       - name: Install forge-std
         run: forge install foundry-rs/forge-std --no-git
       - name: Compile Solidity
         run: forge build
+      - name: Verify live Base configuration and estimate deployment (read-only)
+        env:
+          BASE_RPC_URL: ${{ secrets.BASE_RPC_URL || 'https://mainnet.base.org' }}
+          AAVE_POOL_ADDRESSES_PROVIDER: 0xe20fCBdBfFC4Dd138cE8b2E6FBb6CB49777ad64D
+          AAVE_POOL_EXPECTED: 0xA238Dd80C259a72e81d7e4664a9801593F98d1c5
+        run: node base-mainnet-readonly-deploy-estimate.js
       - name: Run Base Mainnet fork tests
         env:
           BASE_RPC_URL: ${{ secrets.BASE_RPC_URL || 'https://mainnet.base.org' }}
