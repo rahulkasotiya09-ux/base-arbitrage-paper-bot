@@ -111,6 +111,7 @@ contract AaveV3FlashArb {
         uint256 amount,
         Route calldata route
     ) external onlyOwner whenIdle {
+        require(asset != address(0), "ZERO_ASSET");
         require(approvedToken[asset], "ASSET_NOT_ALLOWED");
         require(approvedToken[route.intermediateToken], "MID_NOT_ALLOWED");
         require(asset != route.intermediateToken, "SAME_TOKEN");
