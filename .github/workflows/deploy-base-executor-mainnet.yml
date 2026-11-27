@@ -1,0 +1,126 @@
+name: Deploy Base flash-arbitrage executor (manual broadcast)
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_deployment:
+        description: "Type/select DEPLOY_BASE_MAINNET to broadcast the deployment transaction"
+        required: true
+        type: choice
+        options:
+          - DO_NOT_DEPLOY
+          - DEPLOY_BASE_MAINNET
+        default: DO_NOT_DEPLOY
+
+permissions:
+  contents: read
+
+concurrency:
+  group: base-flasharb-mainnet-deployment
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: ${{ inputs.confirm_deployment == 'DEPLOY_BASE_MAINNET' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout reviewed deployment source
+        uses: actions/checkout@v4
+        with:
+          ref: 98d81a8fc90c99cc20af63f7d27d702cb1b9a495
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Validate bot source and dependencies
+        run: |
+          set -euo pipefail
+          npm install --omit=dev --no-audit --no-fund
+          node --check scanner.js
+          node --check executor.js
+          node --check bot.js
+          npm audit --omit=dev --audit-level=high
+
+      - name: Set up Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+
+      - name: Install forge-std and compile
+        run: |
+          set -euo pipefail
+          forge install foundry-rs/forge-std --no-git
+          forge build
+
+      - name: Check wallet and simulate deployment (no broadcast)
+        env:
+          BASE_RPC_URL: ${{ secrets.BASE_RPC_URL || 'https://mainnet.base.org' }}
+          WALLET_PRIVATE_KEY: ${{ secrets.WALLET_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$WALLET_PRIVATE_KEY" || { echo "Missing WALLET_PRIVATE_KEY secret"; exit 1; }
+          echo "Deployer: 0x88073Ad37F9e1cb6E09048c57fAe4A70383D9aBb"
+          cast balance 0x88073Ad37F9e1cb6E09048c57fAe4A70383D9aBb --ether --rpc-url "$BASE_RPC_URL"
+          forge script script/DeployBase.s.sol:DeployBase \
+            --rpc-url "$BASE_RPC_URL" \
+            --private-key "$WALLET_PRIVATE_KEY" \
+            --gas-limit 4000000 \
+            -vvv
+
+      - name: Broadcast deployment to Base mainnet
+        env:
+          BASE_RPC_URL: ${{ secrets.BASE_RPC_URL || 'https://mainnet.base.org' }}
+          WALLET_PRIVATE_KEY: ${{ secrets.WALLET_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          forge script script/DeployBase.s.sol:DeployBase \
+            --rpc-url "$BASE_RPC_URL" \
+            --private-key "$WALLET_PRIVATE_KEY" \
+            --gas-limit 4000000 \
+            --broadcast \
+            -vvv
+
+      - name: Verify deployed contract and configuration
+        id: verify
+        env:
+          BASE_RPC_URL: ${{ secrets.BASE_RPC_URL || 'https://mainnet.base.org' }}
+        run: |
+          set -euo pipefail
+          artifact="broadcast/DeployBase.s.sol/8453/run-latest.json"
+          test -s "$artifact" || { echo "Foundry broadcast artifact missing"; exit 1; }
+          address="$(jq -r '[.transactions[] | select(.transactionType == "CREATE") | .contractAddress] | last // empty' "$artifact")"
+          test -n "$address" && test "$address" != "null" || { echo "Could not identify deployed executor address"; exit 1; }
+          code="$(cast code "$address" --rpc-url "$BASE_RPC_URL")"
+          test "$code" != "0x" || { echo "No runtime code at deployed address"; exit 1; }
+          owner="$(cast call "$address" "owner()(address)" --rpc-url "$BASE_RPC_URL")"
+          pool="$(cast call "$address" "pool()(address)" --rpc-url "$BASE_RPC_URL")"
+          weth_ok="$(cast call "$address" "approvedToken(address)(bool)" 0x4200000000000000000000000000000000000006 --rpc-url "$BASE_RPC_URL")"
+          router_ok="$(cast call "$address" "approvedRouter(address)(bool)" 0x4752ba5DBc23f44D87826276BF6Fd6b1C372aD24 --rpc-url "$BASE_RPC_URL")"
+          test "${owner,,}" = "0x88073ad37f9e1cb6e09048c57fae4a70383d9abb" || { echo "Owner verification failed"; exit 1; }
+          test "${pool,,}" = "0xa238dd80c259a72e81d7e4664a9801593f98d1c5" || { echo "Aave pool verification failed"; exit 1; }
+          test "$weth_ok" = "true" || { echo "WETH allowlist verification failed"; exit 1; }
+          test "$router_ok" = "true" || { echo "Uniswap V2 router allowlist verification failed"; exit 1; }
+          code_hash="$(cast keccak "$code")"
+          {
+            echo "executor_address=$address"
+            echo "executor_code_hash=$code_hash"
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo "Executor address: $address"
+            echo "Runtime code hash: $code_hash"
+            echo "Owner: $owner"
+            echo "Aave pool: $pool"
+            echo "WETH approved: $weth_ok"
+            echo "Uniswap V2 router approved: $router_ok"
+          } | tee deployment-verification.txt
+
+      - name: Upload deployment receipt and verification
+        if: always() && hashFiles('broadcast/**') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: base-flasharb-mainnet-deployment-${{ github.run_id }}
+          path: |
+            broadcast/
+            deployment-verification.txt
+          retention-days: 90
