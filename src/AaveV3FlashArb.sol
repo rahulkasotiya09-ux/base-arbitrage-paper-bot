@@ -61,7 +61,7 @@ contract AaveV3FlashArb {
         uint256 minFinalOut;
         // Caller-supplied reserve in borrowed-asset units. The executor must
         // calculate this from final calldata L2 + L1 fees with a safety buffer.
-        uint256 gasCostInAsset;
+        uint256 gasReserveInAsset;
         // Required retained profit after the gas reserve.
         uint256 minProfit;
         uint256 deadline;
@@ -74,7 +74,7 @@ contract AaveV3FlashArb {
         address indexed intermediateToken,
         uint256 principal,
         uint256 premium,
-        uint256 contractProfit
+        uint256 grossProfit
     );
 
     modifier onlyOwner() {
@@ -129,7 +129,7 @@ contract AaveV3FlashArb {
         require(approvedRouter[route.buyRouter] && approvedRouter[route.sellRouter], "ROUTER_NOT_ALLOWED");
         require(amount > 0, "ZERO_AMOUNT");
         require(route.minIntermediateOut > 0 && route.minFinalOut > 0, "ZERO_MIN_OUT");
-        require(route.gasCostInAsset > 0, "ZERO_GAS_RESERVE");
+        require(route.gasReserveInAsset > 0, "ZERO_GAS_RESERVE");
         require(route.minProfit > 0, "ZERO_MIN_PROFIT");
         require(route.deadline >= block.timestamp && route.deadline <= block.timestamp + 120, "BAD_DEADLINE");
 
@@ -144,7 +144,7 @@ contract AaveV3FlashArb {
         // Aave must have pulled principal + premium before flashLoanSimple returns.
         // Verify the post-repayment balance independently, not only pre-repayment
         // solvency inside executeOperation.
-        uint256 requiredResidual = startingBalance + route.gasCostInAsset + route.minProfit;
+        uint256 requiredResidual = startingBalance + route.gasReserveInAsset + route.minProfit;
         require(IERC20(asset).balanceOf(address(this)) >= requiredResidual, "POST_REPAYMENT_PROFIT_CHECK");
         require(IERC20(asset).allowance(address(this), address(pool)) == 0, "POOL_ALLOWANCE_NOT_CLEARED");
         require(callbackSeen, "NO_CALLBACK");
@@ -184,15 +184,18 @@ contract AaveV3FlashArb {
         );
 
         uint256 owed = amount + premium;
-        uint256 requiredBalance = startingBalance + owed + r.gasCostInAsset + r.minProfit;
+        uint256 requiredBalance = startingBalance + owed + r.gasReserveInAsset + r.minProfit;
         uint256 finalBalance = IERC20(asset).balanceOf(address(this));
         require(finalBalance >= requiredBalance, "NOT_PROFITABLE");
 
         _safeApprove(asset, address(pool), owed);
 
+        // Gross surplus remains in the contract and is withdrawable by the owner.
+        // gasReserveInAsset is a profitability gate, not a token fee paid here;
+        // the EOA separately pays Base L1/L2 gas.
         emit ArbitrageCompleted(
             asset, r.intermediateToken, amount, premium,
-            finalBalance - startingBalance - owed - r.gasCostInAsset
+            finalBalance - startingBalance - owed
         );
         return true;
     }
