@@ -256,7 +256,7 @@ async function main() {
   }
   gas = finalGas;
   l1Fee = finalL1Fee;
-  l2Cost = finalGas * cap;
+  l2Cost = txGasLimit * cap;
   reserve = finalReserve;
 
   const walletBalance = await provider.getBalance(wallet.address);
