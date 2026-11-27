@@ -19,6 +19,8 @@ const wallet = new ethers.Wallet(process.env.WALLET_PRIVATE_KEY, provider);
 const executor = new ethers.Contract(ethers.getAddress(process.env.EXECUTOR_ADDRESS), [
   "function owner() view returns (address)",
   "function pool() view returns (address)",
+  "function wrappedNative() view returns (address)",
+  "function routerFactory(address) view returns (address)",
   "function approvedToken(address) view returns (bool)",
   "function approvedRouter(address) view returns (bool)",
   "function start(address asset,uint256 amount,(address intermediateToken,address buyRouter,address sellRouter,uint256 minIntermediateOut,uint256 minFinalOut,uint256 gasCostInAsset,uint256 minProfit,uint256 deadline) route)"
@@ -89,6 +91,9 @@ async function main() {
   if ((await executor.owner()).toLowerCase() !== wallet.address.toLowerCase()) {
     throw new Error("Wallet is not contract owner");
   }
+  if ((await executor.wrappedNative()).toLowerCase() !== cfg.wrappedNative.toLowerCase()) {
+    throw new Error("Deployed contract gas-reserve asset is not the configured WETH");
+  }
 
   const output = JSON.parse(fs.readFileSync(new URL("./opportunities.json", import.meta.url), "utf8"));
   const block = await provider.getBlockNumber();
@@ -111,11 +116,13 @@ async function main() {
   if ((await executor.pool()).toLowerCase() !== configuredPool.toLowerCase()) {
     throw new Error("Deployed executor is connected to a different Aave Pool");
   }
-  const [assetAllowed, intermediateAllowed, buyAllowed, sellAllowed] = await Promise.all([
+  const [assetAllowed, intermediateAllowed, buyAllowed, sellAllowed, buyFactoryOnchain, sellFactoryOnchain] = await Promise.all([
     executor.approvedToken(asset),
     executor.approvedToken(intermediate),
     executor.approvedRouter(buy),
-    executor.approvedRouter(sell)
+    executor.approvedRouter(sell),
+    executor.routerFactory(buy),
+    executor.routerFactory(sell)
   ]);
   if (!assetAllowed || !intermediateAllowed || !buyAllowed || !sellAllowed) {
     throw new Error("On-chain token/router allowlist does not authorize this exact route");
@@ -126,8 +133,10 @@ async function main() {
     const [code, factory] = await Promise.all([
       provider.getCode(addr), new ethers.Contract(addr, routerAbi, provider).factory()
     ]);
-    if (code === "0x" || factory.toLowerCase() !== venue.factory.toLowerCase()) {
-      throw new Error("Router code/factory verification failed");
+    const boundFactory = addr.toLowerCase() === buy.toLowerCase() ? buyFactoryOnchain : sellFactoryOnchain;
+    if (code === "0x" || factory.toLowerCase() !== venue.factory.toLowerCase() ||
+        boundFactory.toLowerCase() !== venue.factory.toLowerCase()) {
+      throw new Error("Router code/factory verification failed against both config and on-chain factory binding");
     }
   }
   for (const token of [asset, intermediate]) {
@@ -208,6 +217,7 @@ async function main() {
   let gas = 0n;
   let l1Fee = 0n;
   let l2Cost = 0n;
+  let txGasLimit = 0n;
   let reserve = 1n;
   let converged = false;
   for (let i = 0; i < 12; i++) {
@@ -217,8 +227,10 @@ async function main() {
       getL1Fee(tx.data ?? "0x")
     ]);
     const measuredL2Cost = measuredGas * cap;
-    const nextReserve = ceilDiv((measuredL2Cost + measuredL1Fee) * buffer, 10000n);
+    const measuredTxGasLimit = ceilDiv(measuredGas * 120n, 100n);
+    const nextReserve = ceilDiv((measuredTxGasLimit * cap + measuredL1Fee) * buffer, 10000n);
     gas = measuredGas;
+    txGasLimit = measuredTxGasLimit;
     l1Fee = measuredL1Fee;
     if (nextReserve === reserve) {
       converged = true;
@@ -237,7 +249,8 @@ async function main() {
     provider.estimateGas({ ...tx, from: wallet.address, ...feeFields }),
     getL1Fee(tx.data ?? "0x")
   ]);
-  const finalReserve = ceilDiv((finalGas * cap + finalL1Fee) * buffer, 10000n);
+  txGasLimit = ceilDiv(finalGas * 120n, 100n);
+  const finalReserve = ceilDiv((txGasLimit * cap + finalL1Fee) * buffer, 10000n);
   if (finalReserve !== route.gasCostInAsset) {
     throw new Error("Final calldata changed its gas reserve after verification; refusing execution");
   }
@@ -250,7 +263,7 @@ async function main() {
   if (walletBalance < reserve) {
     throw new Error(`Wallet ETH balance ${ethers.formatEther(walletBalance)} is below the buffered gas reserve ${ethers.formatEther(reserve)}`);
   }
-  const exactTx = { ...tx, from: wallet.address, gasLimit: gas, ...feeFields };
+  const exactTx = { ...tx, from: wallet.address, gasLimit: txGasLimit, ...feeFields };
   // This exact simulation enforces: principal + Aave premium + buffered L1/L2
   // gas reserve + at least $0.01 (converted using a fresh ETH/USD oracle).
   await provider.call(exactTx);
@@ -266,6 +279,7 @@ async function main() {
     freshBuyQuoteWethToIntermediate: freshBuyAmounts[1].toString(),
     freshSellQuoteIntermediateToWeth: freshSellAmounts[1].toString(),
     estimatedGas: gas.toString(),
+    transactionGasLimitWith20PercentHeadroom: txGasLimit.toString(),
     maxL2GasCostWei: l2Cost.toString(),
     finalCalldataL1FeeWei: l1Fee.toString(),
     gasReserveBufferBps: buffer.toString(),
@@ -280,7 +294,7 @@ async function main() {
     return;
   }
 
-  const response = await wallet.sendTransaction({ ...tx, gasLimit: gas, ...feeFields });
+  const response = await wallet.sendTransaction({ ...tx, gasLimit: txGasLimit, ...feeFields });
   console.log("Broadcast transaction:", response.hash);
   const receipt = await response.wait();
   if (!receipt || receipt.status !== 1) throw new Error("Transaction reverted");
