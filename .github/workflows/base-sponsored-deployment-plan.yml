@@ -34,7 +34,7 @@ jobs:
           test -n "$PIMLICO_API_KEY" || (echo "Missing PIMLICO_API_KEY secret" && exit 1)
       - name: Prepare sponsored deployment request (read-only; no signature or broadcast)
         env:
-          WALLET_PRIVATE_KEY: ${{ secrets.WALLET_PRIVATE_KEY }}
+          WALLET_PRIVATE_KEY: ${{ secrets.WALLET_PRIVATE_KEY || secrets.TEST_WALLET_PRIVATE_KEY }}
           PIMLICO_API_KEY: ${{ secrets.PIMLICO_API_KEY }}
           BASE_RPC_URL: ${{ secrets.BASE_RPC_URL || 'https://mainnet.base.org' }}
           AAVE_POOL_ADDRESSES_PROVIDER: '0xe20fCBdBfFC4Dd138cE8b2E6FBb6CB49777ad64D'
