@@ -31,11 +31,11 @@ jobs:
         env:
           RPC_URL: ${{ secrets.BASE_RPC_URL || 'https://mainnet.base.org' }}
           # Contract address and runtime hash are configuration, not secrets.
-          EXECUTOR_ADDRESS: ${{ vars.EXECUTOR_ADDRESS }}
-          EXECUTOR_CODE_HASH: ${{ vars.EXECUTOR_CODE_HASH }}
+          EXECUTOR_ADDRESS: "0x97C13D5C5Defa62901558Ccb00CF8eE04A7CEb6F"
+          EXECUTOR_CODE_HASH: "0x5c3cc506c7748ecc0ff7a034f1b1aeff80600b8576fc52f1f35db56b724f0ef4"
           WALLET_PRIVATE_KEY: ${{ secrets.WALLET_PRIVATE_KEY }}
-          LIVE_TRADING: ${{ vars.LIVE_TRADING || 'false' }}
-          CONFIRM_LIVE_TRADING: ${{ vars.CONFIRM_LIVE_TRADING }}
+          LIVE_TRADING: "false"
+          CONFIRM_LIVE_TRADING: ""
           SCAN_INTERVAL_MS: "300000"
           RUN_ONCE: "true"
           SLIPPAGE_BPS: "30"
