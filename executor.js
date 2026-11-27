@@ -3,7 +3,7 @@ import fs from "node:fs";
 import { ethers } from "ethers";
 
 const cfg = JSON.parse(fs.readFileSync(new URL("./config.json", import.meta.url), "utf8"));
-for (const key of ["RPC_URL", "EXECUTOR_ADDRESS", "WALLET_PRIVATE_KEY"]) {
+for (const key of ["RPC_URL", "EXECUTOR_ADDRESS", "EXECUTOR_CODE_HASH", "WALLET_PRIVATE_KEY"]) {
   if (!process.env[key]) throw new Error(`Missing ${key} in .env`);
 }
 const LIVE = process.env.LIVE_TRADING === "true";
@@ -16,8 +16,11 @@ if (!LIVE && BROADCAST_FLAG) {
 }
 const provider = new ethers.JsonRpcProvider(process.env.RPC_URL, cfg.chainId);
 const wallet = new ethers.Wallet(process.env.WALLET_PRIVATE_KEY, provider);
-const executor = new ethers.Contract(process.env.EXECUTOR_ADDRESS, [
+const executor = new ethers.Contract(ethers.getAddress(process.env.EXECUTOR_ADDRESS), [
   "function owner() view returns (address)",
+  "function pool() view returns (address)",
+  "function approvedToken(address) view returns (bool)",
+  "function approvedRouter(address) view returns (bool)",
   "function start(address asset,uint256 amount,(address intermediateToken,address buyRouter,address sellRouter,uint256 minIntermediateOut,uint256 minFinalOut,uint256 gasCostInAsset,uint256 minProfit,uint256 deadline) route)"
 ], wallet);
 const routerAbi = [
@@ -74,6 +77,15 @@ async function main() {
   if (slip < 1n || slip > 500n || buffer < 10000n || buffer > 30000n) {
     throw new Error("Unsafe slippage or gas-buffer setting");
   }
+  const executorCode = await provider.getCode(await executor.getAddress());
+  if (executorCode === "0x") throw new Error("EXECUTOR_ADDRESS has no deployed contract code");
+  if (!/^0x[0-9a-fA-F]{64}$/.test(process.env.EXECUTOR_CODE_HASH)) {
+    throw new Error("EXECUTOR_CODE_HASH must be the expected 32-byte runtime code hash");
+  }
+  const actualCodeHash = ethers.keccak256(executorCode);
+  if (actualCodeHash.toLowerCase() !== process.env.EXECUTOR_CODE_HASH.toLowerCase()) {
+    throw new Error("Deployed executor bytecode hash does not match the approved code hash");
+  }
   if ((await executor.owner()).toLowerCase() !== wallet.address.toLowerCase()) {
     throw new Error("Wallet is not contract owner");
   }
@@ -93,6 +105,21 @@ async function main() {
   if (!mid) throw new Error("Unknown intermediate token");
   const asset = ethers.getAddress(base.address), intermediate = ethers.getAddress(mid.address);
   const buy = ethers.getAddress(c.buyRouter), sell = ethers.getAddress(c.sellRouter);
+  const configuredPool = await new ethers.Contract(cfg.aaveAddressesProvider, [
+    "function getPool() view returns (address)"
+  ], provider).getPool();
+  if ((await executor.pool()).toLowerCase() !== configuredPool.toLowerCase()) {
+    throw new Error("Deployed executor is connected to a different Aave Pool");
+  }
+  const [assetAllowed, intermediateAllowed, buyAllowed, sellAllowed] = await Promise.all([
+    executor.approvedToken(asset),
+    executor.approvedToken(intermediate),
+    executor.approvedRouter(buy),
+    executor.approvedRouter(sell)
+  ]);
+  if (!assetAllowed || !intermediateAllowed || !buyAllowed || !sellAllowed) {
+    throw new Error("On-chain token/router allowlist does not authorize this exact route");
+  }
   for (const [addr, venue] of [[buy, cfg.venues.find(v => v.router?.toLowerCase() === buy.toLowerCase())],
                                 [sell, cfg.venues.find(v => v.router?.toLowerCase() === sell.toLowerCase())]]) {
     if (!venue?.factory || venue.type !== "v2") throw new Error("Router is not in the approved V2 configuration");
