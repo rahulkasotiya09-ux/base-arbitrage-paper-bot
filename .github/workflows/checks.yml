@@ -15,7 +15,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
-      HAS_RPC: ${{ secrets.RPC_URL != '' }}
+      HAS_BASE_RPC: ${{ secrets.BASE_RPC_URL != '' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -30,8 +30,8 @@ jobs:
         run: forge install foundry-rs/forge-std --no-git
       - name: Compile Solidity
         run: forge build
-      - name: Run Ethereum fork tests when RPC secret is configured
-        if: ${{ env.HAS_RPC == 'true' }}
+      - name: Run Base Mainnet fork tests when BASE_RPC_URL secret is configured
+        if: ${{ env.HAS_BASE_RPC == 'true' }}
         env:
-          RPC_URL: ${{ secrets.RPC_URL }}
-        run: forge test --fork-url "$RPC_URL" -vvv
+          BASE_RPC_URL: ${{ secrets.BASE_RPC_URL }}
+        run: forge test --fork-url "$BASE_RPC_URL" -vvv
