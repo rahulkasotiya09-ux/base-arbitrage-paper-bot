@@ -1,4 +1,4 @@
-name: Base mainnet deployment estimate diagnostic
+name: Base mainnet deployment cost estimate
 
 on:
   workflow_dispatch:
@@ -16,8 +16,23 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Confirm Actions runner starts
-        run: |
-          echo "Deployment workflow runner started successfully."
-          echo "Event: ${{ github.event_name }}"
-          echo "Branch: ${{ github.ref_name }}"
-          echo "This is a read-only diagnostic; no wallet or transaction is used."
+        run: echo "Read-only deployment estimate starting"
+
+      - name: Checkout bot source
+        uses: actions/checkout@v4
+        with:
+          ref: dev/flashloan-bot-build
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Validate estimate script
+        run: node --check base-mainnet-readonly-deploy-estimate.js
+
+      - name: Estimate Base deployment cost (read-only)
+        run: node base-mainnet-readonly-deploy-estimate.js
