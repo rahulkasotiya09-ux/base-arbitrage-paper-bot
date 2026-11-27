@@ -12,8 +12,10 @@ import { createPimlicoClient } from "permissionless/clients/pimlico";
 for (const key of ["BASE_SEPOLIA_RPC_URL", "PIMLICO_API_KEY", "WALLET_PRIVATE_KEY", "EXECUTOR_ADDRESS", "ALLOWED_TOKENS", "ALLOWED_ROUTERS"]) {
   if (!process.env[key]) throw new Error(`Missing ${key} in .env`);
 }
-if (!/^0x[0-9a-fA-F]{64}$/.test(process.env.WALLET_PRIVATE_KEY)) {
-  throw new Error("WALLET_PRIVATE_KEY must be a 32-byte hex key");
+const rawOwnerKey = process.env.WALLET_PRIVATE_KEY.trim();
+const ownerKey = rawOwnerKey.startsWith("0x") ? rawOwnerKey : `0x${rawOwnerKey}`;
+if (!/^0x[0-9a-fA-F]{64}$/.test(ownerKey)) {
+  throw new Error("WALLET_PRIVATE_KEY must contain exactly 64 hexadecimal characters, optionally prefixed with 0x");
 }
 function addresses(name) {
   const values = process.env[name].split(",").map(x => x.trim()).filter(Boolean);
@@ -21,7 +23,7 @@ function addresses(name) {
   return [...new Set(values.map(value => getAddress(value)))];
 }
 
-const owner = privateKeyToAccount(process.env.WALLET_PRIVATE_KEY);
+const owner = privateKeyToAccount(ownerKey);
 const executor = getAddress(process.env.EXECUTOR_ADDRESS);
 const publicClient = createPublicClient({ chain: baseSepolia, transport: http(process.env.BASE_SEPOLIA_RPC_URL) });
 const chainId = await publicClient.getChainId();
