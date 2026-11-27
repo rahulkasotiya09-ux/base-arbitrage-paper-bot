@@ -2,8 +2,9 @@ import "dotenv/config";
 import solc from "solc";
 import {
   concat, createPublicClient, encodeAbiParameters, formatEther, getAddress,
-  getCreate2Address, http, keccak256, privateKeyToAccount, serializeTransaction, toBytes
+  getCreate2Address, http, keccak256, serializeTransaction, toBytes
 } from "viem";
+import { privateKeyToAccount } from "viem/accounts";
 import { base } from "viem/chains";
 import { readFile } from "node:fs/promises";
 
