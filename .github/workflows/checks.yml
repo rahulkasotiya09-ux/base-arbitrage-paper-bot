@@ -30,8 +30,7 @@ jobs:
         run: forge install foundry-rs/forge-std --no-git
       - name: Compile Solidity
         run: forge build
-      - name: Run Base Mainnet fork tests when BASE_RPC_URL secret is configured
-        if: ${{ env.HAS_BASE_RPC == 'true' }}
+      - name: Run Base Mainnet fork tests
         env:
           BASE_RPC_URL: ${{ secrets.BASE_RPC_URL }}
-        run: forge test --fork-url "$BASE_RPC_URL" -vvv
+        run: forge test --fork-url "${BASE_RPC_URL:-https://mainnet.base.org}" -vvv
