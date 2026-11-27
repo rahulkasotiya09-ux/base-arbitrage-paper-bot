@@ -36,8 +36,9 @@ jobs:
       - name: Scan and run guarded executor
         env:
           RPC_URL: ${{ secrets.BASE_RPC_URL || 'https://mainnet.base.org' }}
-          EXECUTOR_ADDRESS: ${{ secrets.EXECUTOR_ADDRESS }}
-          EXECUTOR_CODE_HASH: ${{ secrets.EXECUTOR_CODE_HASH }}
+          # Contract address and runtime hash are configuration, not secrets.
+          EXECUTOR_ADDRESS: ${{ vars.EXECUTOR_ADDRESS }}
+          EXECUTOR_CODE_HASH: ${{ vars.EXECUTOR_CODE_HASH }}
           WALLET_PRIVATE_KEY: ${{ secrets.WALLET_PRIVATE_KEY }}
           LIVE_TRADING: ${{ vars.LIVE_TRADING || 'false' }}
           CONFIRM_LIVE_TRADING: ${{ vars.CONFIRM_LIVE_TRADING }}
