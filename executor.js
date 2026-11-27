@@ -36,6 +36,12 @@ async function main() {
 
   const output = JSON.parse(fs.readFileSync(new URL("./opportunities.json", import.meta.url), "utf8"));
   if (output.chainId !== cfg.chainId) throw new Error("Opportunity file chain mismatch");
+  const currentBlock = await provider.getBlockNumber();
+  const quoteBlock = Number(output.block);
+  const maxQuoteAge = Number(cfg.maxQuoteAgeBlocks ?? 2);
+  if (!Number.isSafeInteger(quoteBlock) || currentBlock - quoteBlock < 0 || currentBlock - quoteBlock > maxQuoteAge) {
+    throw new Error(`Stale or invalid quote: quoted at block ${output.block}, current block ${currentBlock}`);
+  }
   const candidate = output.candidates.find(x =>
     x.base === "WETH" && x.executorCompatible === true &&
     x.buyRouter && x.sellRouter && x.intermediateOutRaw && x.finalOutRaw
