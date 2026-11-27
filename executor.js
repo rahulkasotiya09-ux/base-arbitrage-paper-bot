@@ -113,7 +113,10 @@ async function main() {
     return av === bv ? 0 : (av > bv ? -1 : 1);
   });
   const c = compatible[0];
-  if (!c) throw new Error("No V2/V2 WETH opportunity passed scanner filters");
+  if (!c) {
+    console.log("No V2/V2 WETH candidate passed scanner filters; clean no-trade cycle.");
+    return;
+  }
 
   const base = cfg.tokens.WETH, mid = cfg.tokens[c.intermediate];
   if (!mid) throw new Error("Unknown intermediate token");
