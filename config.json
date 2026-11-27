@@ -5,7 +5,7 @@
   "minProfitUsdCents": 1,
   "ethUsdFeed": "0x71041dddad3595F9CEd3DcCFBe3D1F4b0a16Bb70",
   "maxEthUsdPriceAgeSeconds": 1800,
-  "maxQuoteAgeBlocks": 1,
+  "maxQuoteAgeBlocks": 100,
   "scanAmounts": [
     {
       "token": "WETH",
