@@ -12,7 +12,7 @@ const V3_QUOTER_ABI = [
   "function quoteExactInputSingle((address tokenIn,address tokenOut,uint256 amountIn,uint24 fee,uint160 sqrtPriceLimitX96) params) returns (uint256 amountOut,uint160,uint32,uint256)"
 ];
 const AAVE_PROVIDER_ABI = ["function getPool() view returns (address)"];
-const AAVE_POOL_ABI = ["function FLASHLOAN_PREMIUM_TOTAL() view returns (uint128)"];
+const AAVE_POOL_ABI = ["function FLASHLOAN_PREMIUM_TOTAL() view returns (uint128)"];\nconst ERC20_BALANCE_ABI = ["function balanceOf(address) view returns (uint256)"];
 const AAVE_PROVIDER = cfg.aaveAddressesProvider;
 
 const v2 = new Map();
