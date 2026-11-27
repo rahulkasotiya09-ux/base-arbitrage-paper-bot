@@ -7,7 +7,7 @@ import "../src/AaveV3FlashArb.sol";
 /// @notice Focused callback-authentication and access-control regression tests.
 /// @dev Run against a Base fork with BASE_RPC_URL configured.
 contract AaveV3CallbackSecurityTest is Test {
-    address constant ADDRESSES_PROVIDER = 0xe20fCBdBfFC4Dd138cE8b2E6FBb6CB49777ad64;
+    address constant ADDRESSES_PROVIDER = 0xe20fCBdBfFC4Dd138cE8b2E6FBb6CB49777ad64D;
     address constant WETH = 0x4200000000000000000000000000000000000006;
     address constant USDC = 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913;
     address constant UNISWAP_V2_ROUTER = 0x4752ba5DBc23f44D87826276BF6Fd6b1C372aD24;
