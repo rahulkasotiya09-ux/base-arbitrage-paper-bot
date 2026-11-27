@@ -64,6 +64,7 @@ The preferred next execution path is ERC-4337 through Pimlico on Base. This does
 
 Files added:
 - `smart-account-address.js`: derives the deterministic Simple Account address from the test wallet key.
+- `configure-sponsored-executor.js`: simulates and can submit a sponsored batch that allowlists only the explicitly supplied test tokens and routers.
 - `sponsored-userop.js`: checks the executor owner, simulates the full `start(...)` call with `eth_call`, and can submit that call as one sponsored UserOperation.
 - The Solidity constructor now accepts an explicit `ownerAddress`, so a separately deployed executor can be owned by the ERC-4337 smart account rather than the deployer EOA.
 
@@ -73,7 +74,7 @@ Base Sepolia test flow (not production):
 3. Copy `.env.example` to `.env`, fill `BASE_SEPOLIA_RPC_URL`, `PIMLICO_API_KEY`, and the test wallet key.
 4. Run `npm run smart-account:address`; note the printed `sponsoredSmartAccount`.
 5. Deploy the contract to Base Sepolia with the verified Base Sepolia Aave V3 PoolAddressesProvider and that smart-account address as the second constructor argument. Do not reuse the Ethereum Mainnet provider address.
-6. Configure the contract's token/router allowlists from the smart account. Use only verified Base Sepolia token and router contracts.
+6. Set `ALLOWED_TOKENS` and `ALLOWED_ROUTERS` to verified Base Sepolia addresses. Run `npm run sponsored:configure` with `SPONSORED_CONFIGURE=false` first; after checking the addresses and simulation, set it to `true` and rerun to send the sponsored allowlist operation.
 7. Set the route fields in `.env` using raw token base units and run `npm run sponsored:testnet` with `SPONSORED_SEND=false` first. The full Aave callback and both swaps must pass the `eth_call` simulation.
 8. Only after the dry-run passes, set `SPONSORED_SEND=true` to submit a real Base Sepolia testnet UserOperation. Testnet transactions use test assets and do not prove a live arbitrage opportunity.
 
