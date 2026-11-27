@@ -1,4 +1,4 @@
-name: Base market scan (every 5 minutes)
+name: Base market scan and guarded arbitrage executor (every 5 minutes)
 
 on:
   schedule:
@@ -14,15 +14,16 @@ permissions:
   contents: read
 
 concurrency:
-  group: base-market-scan
-  cancel-in-progress: true
+  group: base-market-scan-and-execution
+  cancel-in-progress: false
 
 jobs:
-  scan:
+  scan-and-execute:
     runs-on: ubuntu-latest
     timeout-minutes: 8
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout bot source
+        uses: actions/checkout@v4
         with:
           ref: dev/flashloan-bot-build
       - uses: actions/setup-node@v4
@@ -30,12 +31,21 @@ jobs:
           node-version: 20
       - name: Install dependencies
         run: npm install --omit=dev --no-audit --no-fund
-      - name: Check scanner syntax
-        run: node --check scanner.js
-      - name: Scan Base routes (read-only; no signing or transactions)
+      - name: Check JavaScript syntax
+        run: node --check scanner.js && node --check executor.js && node --check bot.js
+      - name: Scan and run guarded executor
         env:
           RPC_URL: ${{ secrets.BASE_RPC_URL || 'https://mainnet.base.org' }}
-        run: node scanner.js
+          EXECUTOR_ADDRESS: ${{ secrets.EXECUTOR_ADDRESS }}
+          EXECUTOR_CODE_HASH: ${{ secrets.EXECUTOR_CODE_HASH }}
+          WALLET_PRIVATE_KEY: ${{ secrets.WALLET_PRIVATE_KEY }}
+          LIVE_TRADING: ${{ vars.LIVE_TRADING || 'false' }}
+          CONFIRM_LIVE_TRADING: ${{ vars.CONFIRM_LIVE_TRADING }}
+          SCAN_INTERVAL_MS: "300000"
+          RUN_ONCE: "true"
+          SLIPPAGE_BPS: "30"
+          GAS_BUFFER_BPS: "20000"
+        run: node bot.js
       - name: Upload scan results
         if: always() && hashFiles('opportunities.json') != ''
         uses: actions/upload-artifact@v4
