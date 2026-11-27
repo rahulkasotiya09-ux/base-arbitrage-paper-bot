@@ -21,7 +21,7 @@ contract AaveV3ForkTest is Test {
     address constant BASESWAP_V2_ROUTER = 0x327Df1E6de05895d2ab08513aaDD9313Fe505d86;
 
     function testForkResolvesLiveAavePoolAndPremium() public {
-        vm.createSelectFork(vm.envString("RPC_URL"));
+        vm.createSelectFork(vm.envString("BASE_RPC_URL"));
         IPoolAddressesProvider provider = IPoolAddressesProvider(ADDRESSES_PROVIDER);
         address poolAddress = provider.getPool();
 
@@ -31,14 +31,14 @@ contract AaveV3ForkTest is Test {
     }
 
     function testReceiverUsesProviderPool() public {
-        vm.createSelectFork(vm.envString("RPC_URL"));
+        vm.createSelectFork(vm.envString("BASE_RPC_URL"));
         AaveV3FlashArb receiver = new AaveV3FlashArb(ADDRESSES_PROVIDER, address(this));
         assertEq(address(receiver.pool()), IPoolAddressesProvider(ADDRESSES_PROVIDER).getPool());
         assertEq(receiver.owner(), address(this));
     }
 
     function testForkExecutesProfitableFlashLoanTwoSwapsAndRepays() public {
-        vm.createSelectFork(vm.envString("RPC_URL"));
+        vm.createSelectFork(vm.envString("BASE_RPC_URL"));
 
         AaveV3FlashArb receiver = new AaveV3FlashArb(ADDRESSES_PROVIDER, address(this));
         address sushiRouter = BASESWAP_V2_ROUTER;
@@ -89,7 +89,7 @@ contract AaveV3ForkTest is Test {
     }
 
     function testForkRejectsLosingFlashLoanRoundTrip() public {
-        vm.createSelectFork(vm.envString("RPC_URL"));
+        vm.createSelectFork(vm.envString("BASE_RPC_URL"));
         AaveV3FlashArb receiver = new AaveV3FlashArb(ADDRESSES_PROVIDER, address(this));
         receiver.setToken(WETH, true);
         receiver.setToken(USDC, true);
@@ -113,7 +113,7 @@ contract AaveV3ForkTest is Test {
 
 
     function testCanAssignOwnershipToSponsoredSmartAccount() public {
-        vm.createSelectFork(vm.envString("RPC_URL"));
+        vm.createSelectFork(vm.envString("BASE_RPC_URL"));
         address smartAccount = address(0xCAFE);
         AaveV3FlashArb receiver = new AaveV3FlashArb(ADDRESSES_PROVIDER, smartAccount);
         assertEq(receiver.owner(), smartAccount);
@@ -125,7 +125,7 @@ contract AaveV3ForkTest is Test {
     }
 
     function testOnlyOwnerCanConfigure() public {
-        vm.createSelectFork(vm.envString("RPC_URL"));
+        vm.createSelectFork(vm.envString("BASE_RPC_URL"));
         AaveV3FlashArb receiver = new AaveV3FlashArb(ADDRESSES_PROVIDER, address(this));
         vm.prank(address(0xBEEF));
         vm.expectRevert(bytes("NOT_OWNER"));
