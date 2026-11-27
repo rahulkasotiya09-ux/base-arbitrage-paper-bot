@@ -1,75 +1,41 @@
 {
-  "chainId": 1,
-  "wrappedNative": "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
-  "gasLimitEstimate": 650000,
-  "minProfitBaseUnits": "1000000000000000",
-  "maxQuoteAgeBlocks": 2,
+  "chainId": 8453,
+  "wrappedNative": "0x4200000000000000000000000000000000000006",
+  "gasLimitEstimate": 900000,
+  "minProfitBaseUnits": "1000000000000",
+  "maxQuoteAgeBlocks": 1,
   "scanAmounts": [
     {
       "token": "WETH",
       "amounts": [
-        "0.1",
-        "0.5",
-        "1.0"
-      ]
-    },
-    {
-      "token": "USDC",
-      "amounts": [
-        "1000",
-        "5000"
+        "0.00005",
+        "0.0001"
       ]
     }
   ],
   "tokens": {
     "WETH": {
-      "address": "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+      "address": "0x4200000000000000000000000000000000000006",
       "decimals": 18
     },
     "USDC": {
-      "address": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+      "address": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
       "decimals": 6
-    },
-    "USDT": {
-      "address": "0xdAC17F958D2ee523a2206206994597C13D831ec7",
-      "decimals": 6
-    },
-    "DAI": {
-      "address": "0x6B175474E89094C44Da98b954EedeAC495271d0F",
-      "decimals": 18
     }
   },
   "venues": [
     {
-      "name": "Uniswap V2",
+      "name": "Uniswap V2 Base",
       "type": "v2",
-      "router": "0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D"
+      "router": "0x4752ba5dbc23f44d87826276bf6fd6b1c372ad24",
+      "factory": "0x8909Dc15e40173Ff4699343b6eB8132c65e18eC6"
     },
     {
-      "name": "SushiSwap V2",
+      "name": "BaseSwap V2",
       "type": "v2",
-      "router": "0xd9e1cE17f2641f24aE83637ab66a2cca9C378B9F"
-    },
-    {
-      "name": "Uniswap V3",
-      "type": "v3",
-      "quoter": "0x61fFE014bA17989E743c5F6cB21bF9697530B21e",
-      "fees": [
-        500,
-        3000,
-        10000
-      ]
-    },
-    {
-      "name": "SushiSwap V3",
-      "type": "v3",
-      "quoter": "0x3BFA4769FB09eefC5a80d6E87c3B9C650f7Ae48E",
-      "fees": [
-        500,
-        3000,
-        10000
-      ]
+      "router": "0x327Df1E6de05895d2ab08513aaDD9313Fe505d86",
+      "factory": "0xFDa619b6d20975be80A10332cD39b9a4b0FAa8BB"
     }
   ],
-  "aaveAddressesProvider": "0x2f39d218133AFaB8F2B819B1066c7E434Ad94E9e"
+  "aaveAddressesProvider": "0xe20fCBdBfFC4Dd138cE8b2E6FBb6CB49777ad64D"
 }
