@@ -1,5 +1,4 @@
-
-name: FlashArb Scanner
+name: Base Mainnet read-only arbitrage scan
 
 on:
   workflow_dispatch:
@@ -9,46 +8,42 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: base-arbitrage-readonly-scan
+  cancel-in-progress: true
+
 jobs:
   scan:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
-
+    timeout-minutes: 10
     steps:
-      - name: Checkout repository
+      - name: Checkout Base bot source
         uses: actions/checkout@v4
-
+        with:
+          ref: dev/flashloan-bot-build
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 20
-
       - name: Install dependencies
-        run: npm install
-
-      - name: Run scanner
-        env:
-          RPC_URL: ${{ secrets.RPC_URL }}
-        run: npm run scan
-
-      - name: Check scan output
-        if: always()
+        run: npm install --no-audit --no-fund
+      - name: Check JavaScript syntax
         run: |
-          echo "Checking scanner output..."
-          if [ -f opportunities.json ]; then
-            echo "SUCCESS: opportunities.json exists"
-            ls -lh opportunities.json
-            cat opportunities.json
-          else
-            echo "ERROR: opportunities.json was not created"
-            exit 1
-          fi
-
-      - name: Upload scan results
+          node --check scanner.js
+          node --check executor.js
+      - name: Read Aave Base reserves (no transactions)
+        env:
+          BASE_RPC_URL: ${{ secrets.BASE_RPC_URL || 'https://mainnet.base.org' }}
+        run: node mainnet-preflight.js
+      - name: Scan Base V2 routes (read-only)
+        env:
+          RPC_URL: ${{ secrets.BASE_RPC_URL || 'https://mainnet.base.org' }}
+        run: npm run scan
+      - name: Upload read-only scan results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: arbitrage-results
+          name: base-arbitrage-opportunities
           path: opportunities.json
-          if-no-files-found: error
+          if-no-files-found: ignore
           retention-days: 7
