@@ -21,7 +21,7 @@ jobs:
       - name: Check Base mainnet deployment configuration
         env:
           BASE_RPC_URL: ${{ secrets.BASE_RPC_URL }}
-          BASE_MAINNET_OWNER_PRIVATE_KEY: ${{ secrets.BASE_MAINNET_OWNER_PRIVATE_KEY }}
+          WALLET_PRIVATE_KEY: ${{ secrets.WALLET_PRIVATE_KEY }}
           AAVE_POOL_ADDRESSES_PROVIDER: ${{ vars.AAVE_POOL_ADDRESSES_PROVIDER }}
           AAVE_POOL_EXPECTED: ${{ vars.AAVE_POOL_EXPECTED }}
         run: node base-mainnet-deployment-preflight.js
