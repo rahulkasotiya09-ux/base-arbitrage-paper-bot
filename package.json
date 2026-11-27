@@ -7,16 +7,18 @@
     "scan": "node scanner.js",
     "simulate": "node executor.js",
     "executor": "node executor.js",
-    "check": "node --check scanner.js && node --check executor.js && node --check bot.js && node --check sponsored-userop.js && node --check smart-account-address.js && node --check configure-sponsored-executor.js",
+    "check": "node --check scanner.js && node --check executor.js && node --check bot.js && node --check sponsored-userop.js && node --check smart-account-address.js && node --check configure-sponsored-executor.js && node --check base-mainnet-deploy-plan.js",
     "bot": "node bot.js",
     "sponsored:testnet": "node sponsored-userop.js",
     "smart-account:address": "node smart-account-address.js",
-    "sponsored:configure": "node configure-sponsored-executor.js"
+    "sponsored:configure": "node configure-sponsored-executor.js",
+    "base:deploy-plan": "node base-mainnet-deploy-plan.js"
   },
   "dependencies": {
     "dotenv": "^16.4.7",
     "ethers": "^6.13.5",
     "permissionless": "^0.5.2",
+    "solc": "0.8.24",
     "viem": "^2.58.6"
   }
 }
