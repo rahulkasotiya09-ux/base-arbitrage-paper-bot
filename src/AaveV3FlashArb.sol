@@ -36,8 +36,8 @@ interface IV2Router {
     ) external returns (uint256[] memory amounts);
 }
 
-/// @dev Fork-test starter only. No live deployment is authorized by this code.
-///      The contract only supports two V2-style swaps in this initial milestone.
+/// @notice Two-hop V2 flash-arbitrage receiver.
+/// @dev Still experimental: use only on a fork until independently audited.
 contract AaveV3FlashArb {
     address public immutable owner;
     IAaveV3Pool public immutable pool;
@@ -57,8 +57,11 @@ contract AaveV3FlashArb {
         address sellRouter;
         uint256 minIntermediateOut;
         uint256 minFinalOut;
-        uint256 gasCostInAsset; // caller's conservative gas estimate converted to borrowed-asset units
-        uint256 minProfit; // desired profit after reserving gasCostInAsset
+        // Caller-supplied reserve in borrowed-asset units. The executor must
+        // calculate this from final calldata L2 + L1 fees with a safety buffer.
+        uint256 gasCostInAsset;
+        // Required retained profit after the gas reserve.
+        uint256 minProfit;
         uint256 deadline;
     }
 
@@ -83,7 +86,7 @@ contract AaveV3FlashArb {
     }
 
     constructor(address addressesProvider, address ownerAddress) {
-        require(addressesProvider != address(0), "ZERO_PROVIDER");
+        require(addressesProvider != address(0) && addressesProvider.code.length > 0, "BAD_PROVIDER");
         require(ownerAddress != address(0), "ZERO_OWNER");
         address poolAddress = IPoolAddressesProvider(addressesProvider).getPool();
         require(poolAddress != address(0) && poolAddress.code.length > 0, "BAD_POOL");
@@ -92,7 +95,7 @@ contract AaveV3FlashArb {
     }
 
     function setToken(address token, bool approved) external onlyOwner whenIdle {
-        require(token != address(0), "ZERO_TOKEN");
+        require(token != address(0) && token.code.length > 0, "BAD_TOKEN");
         approvedToken[token] = approved;
         emit TokenApproval(token, approved);
     }
@@ -114,6 +117,8 @@ contract AaveV3FlashArb {
         require(approvedRouter[route.buyRouter] && approvedRouter[route.sellRouter], "ROUTER_NOT_ALLOWED");
         require(amount > 0, "ZERO_AMOUNT");
         require(route.minIntermediateOut > 0 && route.minFinalOut > 0, "ZERO_MIN_OUT");
+        require(route.gasCostInAsset > 0, "ZERO_GAS_RESERVE");
+        require(route.minProfit > 0, "ZERO_MIN_PROFIT");
         require(route.deadline >= block.timestamp && route.deadline <= block.timestamp + 120, "BAD_DEADLINE");
 
         loanAsset = asset;
@@ -124,10 +129,18 @@ contract AaveV3FlashArb {
 
         pool.flashLoanSimple(address(this), asset, amount, abi.encode(route), 0);
 
+        // Aave must have pulled principal + premium before flashLoanSimple returns.
+        // Verify the post-repayment balance independently, not only pre-repayment
+        // solvency inside executeOperation.
+        uint256 requiredResidual = startingBalance + route.gasCostInAsset + route.minProfit;
+        require(IERC20(asset).balanceOf(address(this)) >= requiredResidual, "POST_REPAYMENT_PROFIT_CHECK");
+        require(IERC20(asset).allowance(address(this), address(pool)) == 0, "POOL_ALLOWANCE_NOT_CLEARED");
         require(callbackSeen, "NO_CALLBACK");
+
         active = false;
         loanAsset = address(0);
         loanAmount = 0;
+        startingBalance = 0;
     }
 
     function executeOperation(
@@ -179,10 +192,12 @@ contract AaveV3FlashArb {
         uint256 amountIn,
         uint256 minOut,
         uint256 deadline
-    ) internal returns (uint256 amountOut) {
+    ) internal returns (uint256 actualAmountOut) {
         require(approvedRouter[router] && router.code.length > 0, "BAD_ROUTER");
-        _safeApprove(tokenIn, router, amountIn);
+        uint256 inputBefore = IERC20(tokenIn).balanceOf(address(this));
+        uint256 outputBefore = IERC20(tokenOut).balanceOf(address(this));
 
+        _safeApprove(tokenIn, router, amountIn);
         address[] memory path = new address[](2);
         path[0] = tokenIn;
         path[1] = tokenOut;
@@ -191,30 +206,38 @@ contract AaveV3FlashArb {
             amountIn, minOut, path, address(this), deadline
         );
         require(amounts.length == 2 && amounts[1] >= minOut, "BAD_SWAP_RESULT");
+
+        uint256 inputAfter = IERC20(tokenIn).balanceOf(address(this));
+        uint256 outputAfter = IERC20(tokenOut).balanceOf(address(this));
+        require(inputBefore >= inputAfter && inputBefore - inputAfter == amountIn, "BAD_INPUT_DELTA");
+        require(outputAfter >= outputBefore, "BAD_OUTPUT_DELTA");
+        actualAmountOut = outputAfter - outputBefore;
+        require(actualAmountOut >= minOut, "INSUFFICIENT_RECEIVED");
         _safeApprove(tokenIn, router, 0);
-        return amounts[1];
     }
 
     function _safeApprove(address token, address spender, uint256 value) internal {
+        require(token.code.length > 0, "TOKEN_NO_CODE");
         // Reset-first approval supports tokens that require zero-before-nonzero.
         (bool ok0, bytes memory ret0) = token.call(
             abi.encodeWithSelector(IERC20.approve.selector, spender, 0)
         );
-        require(ok0 && (ret0.length == 0 || abi.decode(ret0, (bool))), "APPROVE_RESET_FAILED");
+        require(ok0 && (ret0.length == 0 || (ret0.length == 32 && abi.decode(ret0, (bool)))), "APPROVE_RESET_FAILED");
 
         (bool ok, bytes memory ret) = token.call(
             abi.encodeWithSelector(IERC20.approve.selector, spender, value)
         );
-        require(ok && (ret.length == 0 || abi.decode(ret, (bool))), "APPROVE_FAILED");
+        require(ok && (ret.length == 0 || (ret.length == 32 && abi.decode(ret, (bool)))), "APPROVE_FAILED");
+        require(IERC20(token).allowance(address(this), spender) == value, "APPROVAL_MISMATCH");
     }
 
     function withdrawToken(address token, address to) external onlyOwner whenIdle {
-        require(token != address(0), "ZERO_TOKEN");
+        require(token != address(0) && token.code.length > 0, "BAD_TOKEN");
         require(to != address(0), "ZERO_TO");
         uint256 bal = IERC20(token).balanceOf(address(this));
         (bool ok, bytes memory ret) = token.call(
             abi.encodeWithSelector(IERC20.transfer.selector, to, bal)
         );
-        require(ok && (ret.length == 0 || abi.decode(ret, (bool))), "TRANSFER_FAILED");
+        require(ok && (ret.length == 0 || (ret.length == 32 && abi.decode(ret, (bool)))), "TRANSFER_FAILED");
     }
 }
