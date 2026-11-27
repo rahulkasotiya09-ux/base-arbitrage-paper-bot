@@ -10,6 +10,7 @@ const hasExecutor = Boolean(process.env.EXECUTOR_ADDRESS && process.env.EXECUTOR
 const live = process.env.LIVE_TRADING === "true";
 const liveConfirmed = process.env.CONFIRM_LIVE_TRADING === "I_ACCEPT_TRANSACTION_RISK";
 if (live && !liveConfirmed) throw new Error("Live mode requires explicit CONFIRM_LIVE_TRADING acknowledgement.");
+if (live && !hasExecutor) throw new Error("LIVE_TRADING is enabled but executor address, code hash, RPC URL, or wallet key is missing; refusing scan-only fallback.");
 
 function run(script, label, args = []) {
   const result = spawnSync(process.execPath, [script, ...args], { stdio: "inherit", env: process.env });
