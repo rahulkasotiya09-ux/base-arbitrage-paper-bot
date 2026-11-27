@@ -57,7 +57,7 @@ Then, from the contract owner wallet, allowlist only the exact assets and router
 
 The executor requires `EXECUTOR_ADDRESS` and `WALLET_PRIVATE_KEY` in a local `.env` file. Use a dedicated wallet with no unrelated assets. Never commit `.env`, private keys, seed phrases, or RPC secrets to GitHub.
 
-## Automated GitHub monitor (simulation-only)\n\n`.github/workflows/flasharb-bot.yml` is configured for manual runs and a five-minute schedule. Add `RPC_URL` as a repository Actions secret. Optionally add `EXECUTOR_ADDRESS` and `WALLET_PRIVATE_KEY` as Actions secrets to run the full executor simulation after each scan. The workflow hard-sets `LIVE_TRADING=false`; it will never broadcast a transaction. GitHub scheduled workflows run only from the repository default branch, so this workflow must be merged into the default branch before the five-minute schedule becomes active. You can manually dispatch it from the development branch after the workflow file is present there.\n\n## Executor: simulation first
+## Automated GitHub monitor (simulation-only)\n\n`.github/workflows/flasharb-bot.yml` is configured for manual runs and a five-minute schedule. Add `RPC_URL` as a repository Actions secret. Optionally add `EXECUTOR_ADDRESS` and `WALLET_PRIVATE_KEY` as Actions secrets to run the full executor simulation after each scan. The workflow hard-sets `LIVE_TRADING=false`; it will never broadcast a transaction. GitHub scheduled and manual-dispatch workflows must exist on the repository default branch to be triggerable. Merge this workflow into the default branch before using either trigger.\n\n## Executor: simulation first
 
 ```bash
 npm run simulate
