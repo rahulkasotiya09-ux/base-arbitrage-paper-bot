@@ -17,7 +17,7 @@ contract DeployBase is Script {
     address internal constant GHO = 0x6Bb7a212910682DCFdbd5BCBb3e28FB4E8da10Ee;
 
     // Only V2 routers are supported by AaveV3FlashArb's swap interface.
-    address internal constant UNISWAP_V2_ROUTER = 0x4752ba5dbc23f44d87826276bf6fd6b1c372ad24;
+    address internal constant UNISWAP_V2_ROUTER = 0x4752ba5DBc23f44D87826276BF6Fd6b1C372aD24;
     address internal constant BASESWAP_V2_ROUTER = 0x327Df1E6de05895d2ab08513aaDD9313Fe505d86;
 
     event ExecutorDeployed(address indexed executor, address indexed owner, bytes32 runtimeCodeHash);
