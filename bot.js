@@ -1,7 +1,7 @@
 import "dotenv/config";
 import { spawnSync } from "node:child_process";
 
-const intervalMs = Number(process.env.SCAN_INTERVAL_MS ?? "30000");
+const intervalMs = Number(process.env.SCAN_INTERVAL_MS ?? "300000");
 if (!Number.isSafeInteger(intervalMs) || intervalMs < 15000) {
   throw new Error("SCAN_INTERVAL_MS must be an integer of at least 15000");
 }
