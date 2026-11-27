@@ -23,7 +23,7 @@ const executor = new ethers.Contract(ethers.getAddress(process.env.EXECUTOR_ADDR
   "function routerFactory(address) view returns (address)",
   "function approvedToken(address) view returns (bool)",
   "function approvedRouter(address) view returns (bool)",
-  "function start(address asset,uint256 amount,(address intermediateToken,address buyRouter,address sellRouter,uint256 minIntermediateOut,uint256 minFinalOut,uint256 gasCostInAsset,uint256 minProfit,uint256 deadline) route)"
+  "function start(address asset,uint256 amount,(address intermediateToken,address buyRouter,address sellRouter,uint256 minIntermediateOut,uint256 minFinalOut,uint256 gasReserveInAsset,uint256 minProfit,uint256 deadline) route)"
 ], wallet);
 const routerAbi = [
   "function factory() view returns (address)",
@@ -210,7 +210,7 @@ async function main() {
     intermediateToken: intermediate, buyRouter: buy, sellRouter: sell,
     minIntermediateOut: freshMinIntermediateOut,
     minFinalOut: freshMinFinalOut,
-    gasCostInAsset: 1n, minProfit: price.minimumWethWei, deadline
+    gasReserveInAsset: 1n, minProfit: price.minimumWethWei, deadline
   };
   const populate = r => executor.start.populateTransaction(asset, amount, r);
   let tx;
@@ -237,7 +237,7 @@ async function main() {
       break;
     }
     reserve = nextReserve;
-    route.gasCostInAsset = reserve;
+    route.gasReserveInAsset = reserve;
   }
   if (!converged) {
     throw new Error("Final-calldata L2/L1 gas reserve did not converge; refusing execution");
@@ -251,7 +251,7 @@ async function main() {
   ]);
   txGasLimit = ceilDiv(finalGas * 120n, 100n);
   const finalReserve = ceilDiv((txGasLimit * cap + finalL1Fee) * buffer, 10000n);
-  if (finalReserve !== route.gasCostInAsset) {
+  if (finalReserve !== route.gasReserveInAsset) {
     throw new Error("Final calldata changed its gas reserve after verification; refusing execution");
   }
   gas = finalGas;
@@ -271,7 +271,7 @@ async function main() {
   const report = {
     mode: LIVE ? "LIVE — only if explicitly enabled" : "SIMULATION ONLY",
     candidate: { amount: c.amountIn, intermediate: c.intermediate, buy: c.buyVenue, sell: c.sellVenue, quoteBlock },
-    minimumNetProfitUsd: `0.${minProfitUsdCents.toString().padStart(2, "0")}`,
+    minimumNetProfitUsd: `${(minProfitUsdCents / 100n).toString()}.${(minProfitUsdCents % 100n).toString().padStart(2, "0")}`,
     minimumNetProfitWeth: ethers.formatEther(price.minimumWethWei),
     ethUsdAnswer: price.ethUsdAnswer,
     ethUsdFeedUpdatedAt: price.updatedAt,
@@ -286,7 +286,7 @@ async function main() {
     bufferedGasReserveWeth: ethers.formatEther(reserve),
     walletEthBalance: ethers.formatEther(walletBalance),
     exactFinalTransactionSimulation: "PASSED",
-    feeAccounting: "Aave premium included; both swap fees are reflected in fresh router quotes; L2/L1 network fees buffered separately. Reverted transactions can still consume gas."
+    feeAccounting: "Aave premium is repaid on-chain; both DEX fees/price impact are reflected in fresh router quotes; the contract requires gross surplus to exceed a conservative L1+L2 gas reserve plus the USD profit floor. The reserve is a gate, not a fee deducted or paid by the contract; the EOA pays network gas. Reverted transactions can still consume gas."
   };
   console.log(JSON.stringify(report, null, 2));
   if (!LIVE) {
@@ -306,7 +306,7 @@ async function main() {
     receiptL1FeeWei: receipt.l1Fee?.toString() ?? null,
     receiptL1GasUsed: receipt.l1GasUsed?.toString() ?? null,
     receiptL1GasPrice: receipt.l1GasPrice?.toString() ?? null,
-    note: "The contract enforced the buffered gas reserve and USD-cent profit floor before repayment. Verify the receipt's L1 fee fields and ArbitrageCompleted event before withdrawing."
+    note: "The contract enforces gross surplus >= buffered L1/L2 gas reserve + USD-cent floor. The reserve is not spent by the contract and remains part of withdrawable gross surplus. Verify actual receipt fees before treating profit as realized."
   }, null, 2));
 }
 main().catch(e => {
