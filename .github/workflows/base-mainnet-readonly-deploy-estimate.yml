@@ -1,6 +1,6 @@
 name: Base mainnet read-only deployment gas estimate
 
-on:
+"on":
   workflow_dispatch:
   push:
     branches:
