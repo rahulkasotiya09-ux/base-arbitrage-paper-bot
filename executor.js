@@ -97,15 +97,12 @@ async function main() {
   }
 
   const output = JSON.parse(fs.readFileSync(new URL("./opportunities.json", import.meta.url), "utf8"));
-  const block = await provider.getBlockNumber();
-  const quoteBlock = Number(output.block);
-  if (output.chainId !== 8453 || !Number.isSafeInteger(quoteBlock) ||
-      block < quoteBlock || block - quoteBlock > Number(cfg.maxQuoteAgeBlocks ?? 1)) {
-    throw new Error("Opportunity quotes are stale or from the wrong chain");
+  if (output.chainId !== 8453 || !Array.isArray(output.candidates)) {
+    throw new Error("Opportunity file has the wrong chain or invalid candidate list");
   }
-  const compatible = (output.candidates ?? []).filter(x =>
-    x.base === "WETH" && x.executorCompatible && x.buyRouter && x.sellRouter && x.intermediate &&
-    x.estimatedNetProfitRaw && /^\d+$/.test(String(x.estimatedNetProfitRaw))
+  const compatible = output.candidates.filter(x =>
+    x.base === "WETH" && x.executorCompatible === true && x.buyRouter && x.sellRouter && x.intermediate &&
+    /^\d+$/.test(String(x.estimatedNetProfitRaw ?? ""))
   );
   compatible.sort((a, b) => {
     const av = BigInt(a.estimatedNetProfitRaw);
@@ -116,6 +113,17 @@ async function main() {
   if (!c) {
     console.log("No V2/V2 WETH candidate passed scanner filters; clean no-trade cycle.");
     return;
+  }
+
+  // Only validate quote age when a real candidate exists. The executor
+  // independently re-quotes both swaps at the current head before simulation.
+  const block = await provider.getBlockNumber();
+  const quoteBlock = Number(output.block);
+  const maxQuoteAgeBlocks = Number(cfg.maxQuoteAgeBlocks ?? 100);
+  if (!Number.isSafeInteger(quoteBlock) || quoteBlock <= 0 ||
+      !Number.isSafeInteger(maxQuoteAgeBlocks) || maxQuoteAgeBlocks < 1 ||
+      block < quoteBlock || block - quoteBlock > maxQuoteAgeBlocks) {
+    throw new Error("Candidate quote snapshot is too old or from a future block");
   }
 
   const base = cfg.tokens.WETH, mid = cfg.tokens[c.intermediate];
