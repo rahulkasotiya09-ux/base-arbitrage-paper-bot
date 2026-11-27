@@ -42,5 +42,5 @@ jobs:
         env:
           BASE_RPC_URL: ${{ secrets.BASE_RPC_URL }}
           AAVE_POOL_ADDRESSES_PROVIDER: 0xe20fCBdBfFC4Dd138cE8b2E6FBb6CB49777ad64
-          AAVE_POOL_EXPECTED: 0xA238Dd80C259a72e81d7e4664a9801593F98d1c5
+          AAVE_POOL_EXPECTED: '0xA238Dd80C259a72e81d7e4664a9801593F98d1c5'
         run: node base-mainnet-readonly-deploy-estimate.js
