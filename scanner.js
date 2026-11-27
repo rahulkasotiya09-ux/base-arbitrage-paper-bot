@@ -95,7 +95,7 @@ async function main() {
               if (baseToken.address.toLowerCase() !== cfg.wrappedNative.toLowerCase() || !gasPrice) continue;
               const gasCostBase = BigInt(cfg.gasLimitEstimate) * gasPrice;
               const net = gross - gasCostBase;
-              if (net >= BigInt(cfg.minProfitBaseUnits)) {
+              if (net > 0n) {
                 rows.push({
                   block, base: amounts.token, intermediate: midName, amountIn: amountText,
                   buyVenue: buy.name, buyFee, sellVenue: sell.name, sellFee,
@@ -116,7 +116,7 @@ async function main() {
                   quoteBlock: block,
                   l1DataFeeIncluded: false,
                   executionReady: buy.type === "v2" && sell.type === "v2",
-                  note: "Indicative same-block quotes only. Estimated gas covers L2 execution only; Base L1 data fee is NOT included. Re-quote, calculate L1 fee from final calldata, and simulate before any execution."
+                  note: "Preliminary filter only: includes Aave premium and estimated L2 gas, but excludes final-calldata Base L1 data fee and safety buffer. Executor must independently price every cost and pass exact simulation."
                 });
               }
             }
@@ -141,6 +141,6 @@ async function main() {
   console.log(`Scanned block ${block}. ${rows.length} preliminary candidate(s) written to opportunities.json`);
   if (rows.some(r => !r.executionReady)) console.log("Some routes use V3 quotes and are research-only; the current executor supports V2 routes only.");
   for (const r of rows.slice(0, 20)) console.log(`${r.base} ${r.amountIn} | ${r.buyVenue} -> ${r.sellVenue} | net=${r.estimatedNetProfit}`);
-  if (!rows.length) console.log("No candidates passed configured thresholds. This is normal.");
+  if (!rows.length) console.log("No candidates had positive indicative profit after Aave premium and estimated L2 gas. Final L1 fee and safety buffer are checked by executor.");
 }
 main().catch(e => { console.error(e); process.exitCode = 1; });
