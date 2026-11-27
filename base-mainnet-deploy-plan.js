@@ -60,7 +60,7 @@ if (creationBytecode === "0x") throw new Error("Compiler returned empty creation
 
 const constructorArgs = encodeAbiParameters(
   [{ type: "address" }, { type: "address" }],
-  [provider, account.address]
+  [provider, owner.address]
 );
 const initCode = concat([creationBytecode, constructorArgs]);
 const salt = keccak256(toBytes("base-arbitrage-paper-bot:AaveV3FlashArb:v1"));
@@ -109,6 +109,7 @@ console.log(JSON.stringify({
   deployerEOA: owner.address,
   smartAccount: account.address,
   smartAccountAlreadyDeployed: Boolean(smartCode && smartCode !== "0x"),
+  noteAboutOwnership: "Contract owner is the EOA derived from WALLET_PRIVATE_KEY, matching executor.js signer. Smart account is only the sponsored CREATE2 deployer; it is not the contract owner.",
   aaveProvider: provider,
   verifiedAavePool: getAddress(providerPool),
   create2Factory,
@@ -116,7 +117,8 @@ console.log(JSON.stringify({
   contract: "AaveV3FlashArb",
   compiler: solc.version(),
   optimizer: { enabled: true, runs: 200 },
-  constructorOwner: account.address,
+  constructorOwner: owner.address,
+  executorEOAOwnerMatches: owner.address.toLowerCase() === owner.address.toLowerCase(),
   predictedContractAddress: predictedAddress,
   initCodeHash: keccak256(initCode),
   creationBytecodeBytes: (creationBytecode.length - 2) / 2,
