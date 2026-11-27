@@ -103,8 +103,16 @@ async function main() {
       block < quoteBlock || block - quoteBlock > Number(cfg.maxQuoteAgeBlocks ?? 1)) {
     throw new Error("Opportunity quotes are stale or from the wrong chain");
   }
-  const c = output.candidates.find(x => x.base === "WETH" && x.executorCompatible &&
-    x.buyRouter && x.sellRouter && x.intermediate);
+  const compatible = (output.candidates ?? []).filter(x =>
+    x.base === "WETH" && x.executorCompatible && x.buyRouter && x.sellRouter && x.intermediate &&
+    x.estimatedNetProfitRaw && /^\\d+$/.test(String(x.estimatedNetProfitRaw))
+  );
+  compatible.sort((a, b) => {
+    const av = BigInt(a.estimatedNetProfitRaw);
+    const bv = BigInt(b.estimatedNetProfitRaw);
+    return av === bv ? 0 : (av > bv ? -1 : 1);
+  });
+  const c = compatible[0];
   if (!c) throw new Error("No V2/V2 WETH opportunity passed scanner filters");
 
   const base = cfg.tokens.WETH, mid = cfg.tokens[c.intermediate];
