@@ -31,7 +31,7 @@ contract AaveV3ForkTest is Test {
 
     function testReceiverUsesProviderPool() public {
         vm.createSelectFork(vm.envString("RPC_URL"));
-        AaveV3FlashArb receiver = new AaveV3FlashArb(ADDRESSES_PROVIDER);
+        AaveV3FlashArb receiver = new AaveV3FlashArb(ADDRESSES_PROVIDER, address(this));
         assertEq(address(receiver.pool()), IPoolAddressesProvider(ADDRESSES_PROVIDER).getPool());
         assertEq(receiver.owner(), address(this));
     }
@@ -39,7 +39,7 @@ contract AaveV3ForkTest is Test {
     function testForkExecutesProfitableFlashLoanTwoSwapsAndRepays() public {
         vm.createSelectFork(vm.envString("RPC_URL"));
 
-        AaveV3FlashArb receiver = new AaveV3FlashArb(ADDRESSES_PROVIDER);
+        AaveV3FlashArb receiver = new AaveV3FlashArb(ADDRESSES_PROVIDER, address(this));
         address sushiRouter = 0xd9e1cE17f2641f24aE83637ab66a2cca9C378B9F;
 
         // Locate the real WETH/USDC V2 pairs behind the two real router contracts.
@@ -89,7 +89,7 @@ contract AaveV3ForkTest is Test {
 
     function testForkRejectsLosingFlashLoanRoundTrip() public {
         vm.createSelectFork(vm.envString("RPC_URL"));
-        AaveV3FlashArb receiver = new AaveV3FlashArb(ADDRESSES_PROVIDER);
+        AaveV3FlashArb receiver = new AaveV3FlashArb(ADDRESSES_PROVIDER, address(this));
         receiver.setToken(WETH, true);
         receiver.setToken(USDC, true);
         receiver.setRouter(UNISWAP_V2_ROUTER, true);
@@ -112,7 +112,7 @@ contract AaveV3ForkTest is Test {
 
     function testOnlyOwnerCanConfigure() public {
         vm.createSelectFork(vm.envString("RPC_URL"));
-        AaveV3FlashArb receiver = new AaveV3FlashArb(ADDRESSES_PROVIDER);
+        AaveV3FlashArb receiver = new AaveV3FlashArb(ADDRESSES_PROVIDER, address(this));
         vm.prank(address(0xBEEF));
         vm.expectRevert(bytes("NOT_OWNER"));
         receiver.setToken(address(0x1234), true);
