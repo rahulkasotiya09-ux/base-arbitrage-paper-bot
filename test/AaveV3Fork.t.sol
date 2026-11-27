@@ -78,7 +78,7 @@ contract AaveV3ForkTest is Test {
             sellRouter: sushiRouter,
             minIntermediateOut: minUsdcOut,
             minFinalOut: minWethOut,
-            gasCostInAsset: 0.005 ether,
+            gasReserveInAsset: 0.005 ether,
             minProfit: 0.01 ether,
             deadline: block.timestamp + 60
         });
@@ -87,7 +87,7 @@ contract AaveV3ForkTest is Test {
         receiver.start(WETH, loanAmount, route);
         uint256 balanceAfter = IERC20(WETH).balanceOf(address(receiver));
 
-        assertGe(balanceAfter, balanceBefore + route.gasCostInAsset + route.minProfit, "gas reserve plus minimum net profit not retained");
+        assertGe(balanceAfter, balanceBefore + route.gasReserveInAsset + route.minProfit, "gas reserve plus minimum net profit not retained");
         assertEq(IERC20(WETH).allowance(address(receiver), address(receiver.pool())), 0, "unexpected leftover pool allowance");
     }
 
@@ -104,7 +104,7 @@ contract AaveV3ForkTest is Test {
             sellRouter: UNISWAP_V2_ROUTER,
             minIntermediateOut: 1,
             minFinalOut: 1,
-            gasCostInAsset: 1,
+            gasReserveInAsset: 1,
             minProfit: 1,
             deadline: block.timestamp + 60
         });
@@ -137,7 +137,7 @@ contract AaveV3ForkTest is Test {
             sellRouter: UNISWAP_V2_ROUTER,
             minIntermediateOut: 1,
             minFinalOut: 1,
-            gasCostInAsset: 1,
+            gasReserveInAsset: 1,
             minProfit: 1,
             deadline: block.timestamp + 60
         });
