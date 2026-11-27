@@ -7,11 +7,15 @@
     "scan": "node scanner.js",
     "simulate": "node executor.js",
     "executor": "node executor.js",
-    "check": "node --check scanner.js && node --check executor.js && node --check bot.js",
-    "bot": "node bot.js"
+    "check": "node --check scanner.js && node --check executor.js && node --check bot.js && node --check sponsored-userop.js && node --check smart-account-address.js",
+    "bot": "node bot.js",
+    "sponsored:testnet": "node sponsored-userop.js",
+    "smart-account:address": "node smart-account-address.js"
   },
   "dependencies": {
     "dotenv": "^16.4.7",
-    "ethers": "^6.13.5"
+    "ethers": "^6.13.5",
+    "permissionless": "^0.5.2",
+    "viem": "^2.58.6"
   }
 }
