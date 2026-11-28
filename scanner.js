@@ -556,7 +556,6 @@ async function main() {
     const owed = amountIn + premium;
     if (finalOut <= owed) { stats.rejectedBeforeGas++; return; }
     const gross = finalOut - owed;
-    const gross = finalOut - owed;
     stats.threeHopGrossPositive = (stats.threeHopGrossPositive ?? 0) + 1;
     discoveryOnlyRows.push({
       block, base: "WETH", routeHops: 3,
