@@ -222,8 +222,8 @@ contract AaveV3FlashArbV4 is IUnlockCallback {
         require(amount > 0 && route.minIntermediateOut > 0 && route.minFinalOut > 0, "BAD_AMOUNT_OR_MIN_OUT");
         require(route.gasReserveInAsset > 0 && route.minProfit > 0, "BAD_PROFIT_GUARD");
         require(route.deadline >= block.timestamp && route.deadline <= block.timestamp + 120, "BAD_DEADLINE");
-        _validateV4Leg(route.buyRouter, route.buyFee, route.buyTickSpacing);
-        _validateV4Leg(route.sellRouter, route.sellFee, route.sellTickSpacing);
+        if (routerType[route.buyRouter] == 3) _validateV4Leg(route.buyRouter, route.buyFee, route.buyTickSpacing);
+        if (routerType[route.sellRouter] == 3) _validateV4Leg(route.sellRouter, route.sellFee, route.sellTickSpacing);
         require(approvedRouter[route.buyRouter] && approvedRouter[route.sellRouter], "ROUTER_NOT_ALLOWED");
 
         loanAsset = asset;
@@ -292,8 +292,8 @@ contract AaveV3FlashArbV4 is IUnlockCallback {
             require(approvedToken[asset] && approvedToken[r.intermediateToken], "TOKEN_REVOKED");
             require(approvedRouter[r.buyRouter] && approvedRouter[r.sellRouter], "ROUTER_REVOKED");
             require(r.deadline >= block.timestamp && r.deadline <= block.timestamp + 120, "ROUTE_EXPIRED");
-            _validateV4Leg(r.buyRouter, r.buyFee, r.buyTickSpacing);
-            _validateV4Leg(r.sellRouter, r.sellFee, r.sellTickSpacing);
+            if (routerType[r.buyRouter] == 3) _validateV4Leg(r.buyRouter, r.buyFee, r.buyTickSpacing);
+            if (routerType[r.sellRouter] == 3) _validateV4Leg(r.sellRouter, r.sellFee, r.sellTickSpacing);
             uint256 midOut = _swapAny(r.buyRouter, asset, r.intermediateToken, amount, r.minIntermediateOut, r.deadline, r.buyFee, r.buyTickSpacing);
             _swapAny(r.sellRouter, r.intermediateToken, asset, midOut, r.minFinalOut, r.deadline, r.sellFee, r.sellTickSpacing);
             _finalizeFlashLoan(asset, r.intermediateToken, amount, premium, r.gasReserveInAsset, r.minProfit);
