@@ -107,9 +107,13 @@ async function main() {
   const poolAddress = await poolProvider.getPool({ blockTag: block });
   const pool = new ethers.Contract(poolAddress, AAVE_POOL_ABI, provider);
   const premiumBps = BigInt(await pool.FLASHLOAN_PREMIUM_TOTAL({ blockTag: block }));
-  // Live executor currently supports V2/V2 routes only. Skip V3 quote combinations
-  // that cannot be broadcast by this executor, so scan time is spent on executable paths.
-  const scanVenues = cfg.venues.filter(venue => venue.type === "v2" || venue.type === "v3");
+  // Scan the actual configured V2 and V3 venues. V3 candidates carry their fee
+  // tiers into opportunities.json; executor.js independently verifies on-chain
+  // routerType/factory approvals before simulation or any explicitly enabled broadcast.
+  const scanVenues = cfg.venues.filter(venue =>
+    (venue.type === "v2" && venue.router) ||
+    (venue.type === "v3" && venue.router && venue.factory && venue.quoter && Array.isArray(venue.fees))
+  );
   if (scanVenues.length < 2) throw new Error("At least two configured V2/V3 venues are required for arbitrage scanning");
   const rows = [];
   const stats = {
@@ -158,7 +162,8 @@ async function main() {
       stats.profitableIndicative++;
       rows.push({
         block, base: amounts.token, intermediate: midName, newlyDiscovered: Boolean(midToken.discoveryOnly), amountIn: amountText,
-        buyVenue: buy.name, buyFee, sellVenue: sell.name, sellFee,
+        buyVenue: buy.name, buyType: buy.type, buyFee,
+        sellVenue: sell.name, sellType: sell.type, sellFee,
         buyRouter: buy.router,
         sellRouter: sell.router,
         intermediateAddress: midToken.address,
