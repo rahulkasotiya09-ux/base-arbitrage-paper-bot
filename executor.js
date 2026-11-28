@@ -14,7 +14,7 @@ if (LIVE && (!BROADCAST_FLAG || process.env.CONFIRM_LIVE_TRADING !== "I_ACCEPT_T
 if (!LIVE && BROADCAST_FLAG) {
   throw new Error("Broadcast flag supplied but LIVE_TRADING is not true; refusing to send.");
 }
-const provider = new ethers.JsonRpcProvider(process.env.RPC_URL, cfg.chainId);
+const provider = new ethers.JsonRpcProvider(process.env.RPC_URL, cfg.chainId, { staticNetwork: true });
 const wallet = new ethers.Wallet(process.env.WALLET_PRIVATE_KEY, provider);
 const executor = new ethers.Contract(ethers.getAddress(process.env.EXECUTOR_ADDRESS), [
   "function owner() view returns (address)",
