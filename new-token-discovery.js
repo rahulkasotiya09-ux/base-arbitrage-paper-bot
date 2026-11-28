@@ -1,6 +1,7 @@
 import "dotenv/config";
 import fs from "node:fs";
 import { ethers } from "ethers";
+import { verifyNewTokenSecurity } from "./token-security.js";
 
 const OUT = new URL("./new-token-watchlist.json", import.meta.url);
 const configuredRpc = process.env.RPC_URL || "https://mainnet.base.org";
@@ -72,7 +73,9 @@ async function main() {
     geckoPoolsReturned: 0,
     geckoBasePools: 0,
     geckoPoolsPassingMarketFilters: 0,
-    geckoTokenCandidates: 0
+    geckoTokenCandidates: 0,
+    securityChecksPassed: 0,
+    securityChecksRejected: 0
   };
 
   // DexScreener profile/boost lists are global promotional feeds, not complete chain-wide token feeds.
@@ -188,6 +191,15 @@ async function main() {
         metadataFailures++;
         return null;
       }
+      let security;
+      try {
+        security = await verifyNewTokenSecurity(address);
+        diagnostics.securityChecksPassed++;
+      } catch (error) {
+        diagnostics.securityChecksRejected++;
+        console.warn("Security rejected " + address + ": " + error.message);
+        return null;
+      }
       const pair = eligible[0];
       return {
         symbol: meta.symbol,
@@ -207,8 +219,10 @@ async function main() {
         poolAgeMinutes: Math.floor((Date.now() - Number(pair.pairCreatedAt)) / 60000),
         priceUsd: pair.priceUsd ?? null,
         discoverySources: [...candidate.sources],
-        discoveryOnly: true,
-        marketFiltersPassed: true
+        discoveryOnly: false,
+        marketFiltersPassed: true,
+        securityPassed: true,
+        security
       };
     } catch (error) {
       pairRequestErrors++;
@@ -246,7 +260,7 @@ async function main() {
       "GeckoTerminal Base new pools (first " + GECKO_NEW_POOL_PAGES + " pages)",
       "DexScreener token-pairs: retain up to 10 eligible pools per token"
     ],
-    tokenEligibility: "Eligible when a Base pool meets the configured liquidity/volume/age filters; the scanner must obtain buy and sell quotes and calculate positive net profit.",
+    tokenEligibility: "Eligible only after Base liquidity/volume/age filters and strict GoPlus security checks; scanner must obtain executable buy/sell quotes and calculate positive net profit after flash premium and estimated fees.",
     executionEnabled: true,
     tokens
   }, null, 2));
