@@ -14,7 +14,7 @@ concurrency:
 jobs:
   scan-and-execute:
     runs-on: ubuntu-latest
-    timeout-minutes: 8
+    timeout-minutes: 12
 
     steps:
       - name: Checkout bot source
