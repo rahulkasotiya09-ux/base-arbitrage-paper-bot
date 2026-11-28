@@ -23,7 +23,23 @@ for (const venue of cfg.venues) {
   if (venue.type === "v2") v2.set(venue.name, new ethers.Contract(venue.router, V2_ABI, provider));
   if (venue.type === "v3") v3.set(venue.name, new ethers.Contract(venue.quoter, V3_QUOTER_ABI, provider));
 }
-const tokenEntries = Object.entries(cfg.tokens);
+const discoveredPath = new URL("./new-token-watchlist.json", import.meta.url);
+let discoveredTokens = {};
+try {
+  const watchlist = JSON.parse(fs.readFileSync(discoveredPath, "utf8"));
+  for (const token of (watchlist.tokens ?? [])) {
+    if (token?.symbol && token?.address && Number.isInteger(token.decimals) &&
+        !Object.prototype.hasOwnProperty.call(cfg.tokens, token.symbol)) {
+      discoveredTokens[token.symbol] = {
+        address: ethers.getAddress(token.address),
+        decimals: token.decimals,
+        discoveryOnly: true
+      };
+    }
+  }
+} catch { /* Discovery may be unavailable; continue with configured tokens. */ }
+const allTokens = { ...cfg.tokens, ...discoveredTokens };
+const tokenEntries = Object.entries(allTokens);
 const parse = (n, d) => ethers.parseUnits(String(n), d);
 
 async function quote(venue, tokenIn, tokenOut, amountIn, fee, blockTag) {
@@ -109,11 +125,11 @@ async function main() {
               if (net > 0n) {
                 stats.profitableIndicative++;
                 rows.push({
-                  block, base: amounts.token, intermediate: midName, amountIn: amountText,
+                  block, base: amounts.token, intermediate: midName, newlyDiscovered: Boolean(midToken.discoveryOnly), amountIn: amountText,
                   buyVenue: buy.name, buyFee, sellVenue: sell.name, sellFee,
                   buyRouter: buy.type === "v2" ? buy.router : null,
                   sellRouter: sell.type === "v2" ? sell.router : null,
-                  executorCompatible: buy.type === "v2" && sell.type === "v2",
+                  executorCompatible: buy.type === "v2" && sell.type === "v2" && !midToken.discoveryOnly,
                   intermediateOut: ethers.formatUnits(midOut, midToken.decimals),
                   intermediateOutRaw: midOut.toString(),
                   finalOut: ethers.formatUnits(baseOut, baseToken.decimals),
@@ -128,7 +144,7 @@ async function main() {
                   gasAdjusted: true,
                   quoteBlock: block,
                   l1DataFeeIncluded: false,
-                  executionReady: buy.type === "v2" && sell.type === "v2",
+                  executionReady: buy.type === "v2" && sell.type === "v2" && !midToken.discoveryOnly,
                   note: "Preliminary filter only: includes Aave premium and estimated L2 gas, but excludes final-calldata Base L1 data fee and safety buffer. Executor must independently price every cost and pass exact simulation."
                 });
               }
