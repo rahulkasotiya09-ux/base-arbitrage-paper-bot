@@ -97,7 +97,7 @@ async function main() {
     } catch (error) {
       console.warn("Discovery feed " + source + " unavailable: " + error.message);
     }
-  });
+  }));
   diagnostics.profileBaseCandidates = [...candidateMap.values()]
     .filter(item => item.sources.has("profiles")).length;
 
