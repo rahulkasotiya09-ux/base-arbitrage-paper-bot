@@ -7,7 +7,7 @@ const cfg = JSON.parse(fs.readFileSync(new URL("./config.json", import.meta.url)
 const rpc = process.env.RPC_URL;
 if (!rpc) throw new Error("Set RPC_URL in .env (use a trusted Ethereum RPC endpoint).");
 
-const provider = new ethers.JsonRpcProvider(rpc, cfg.chainId);
+const provider = new ethers.JsonRpcProvider(rpc, cfg.chainId, { staticNetwork: true });
 // Keep quote traffic off a single public RPC. Optional private/provider endpoints can
 // be supplied through RPC_FALLBACK_URLS (comma-separated); public Base endpoints are
 // defaults so the scanner improves immediately without requiring another secret.
