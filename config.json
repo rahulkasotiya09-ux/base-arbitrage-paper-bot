@@ -115,8 +115,10 @@
           "fee": 3000,
           "tickSpacing": 60
         }
-      ]
+      ],
+      "router": "0x498581ff718922c3f8e6a244956af099b2652b2b"
     }
   ],
-  "aaveAddressesProvider": "0xe20fCBdBfFC4Dd138cE8b2E6FBb6CB49777ad64D"
+  "aaveAddressesProvider": "0xe20fCBdBfFC4Dd138cE8b2E6FBb6CB49777ad64D",
+  "poolManager": "0x498581ff718922c3f8e6a244956af099b2652b2b"
 }
