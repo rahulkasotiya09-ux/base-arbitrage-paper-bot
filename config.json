@@ -120,5 +120,6 @@
     }
   ],
   "aaveAddressesProvider": "0xe20fCBdBfFC4Dd138cE8b2E6FBb6CB49777ad64D",
-  "poolManager": "0x498581ff718922c3f8e6a244956af099b2652b2b"
+  "poolManager": "0x498581ff718922c3f8e6a244956af099b2652b2b",
+  "v4StateView": "0xa3c0c9b65bad0b08107aa264b0f3db444b867a71"
 }
