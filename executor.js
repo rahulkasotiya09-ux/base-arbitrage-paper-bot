@@ -278,7 +278,18 @@ async function main() {
     gasReserveInAsset: 1n, minProfit: price.minimumWethWei, deadline
   };
   const hasV3Leg = buyVenue.type === "v3" || sellVenue.type === "v3";
-  const populate = r => hasV3Leg\n    ? executor.startV3.populateTransaction(asset, amount, r)\n    : executor.start.populateTransaction(asset, amount, {\n        intermediateToken: r.intermediateToken, buyRouter: r.buyRouter, sellRouter: r.sellRouter,\n        minIntermediateOut: r.minIntermediateOut, minFinalOut: r.minFinalOut,\n        gasReserveInAsset: r.gasReserveInAsset, minProfit: r.minProfit, deadline: r.deadline\n      });
+  const populate = r => hasV3Leg
+    ? executor.startV3.populateTransaction(asset, amount, r)
+    : executor.start.populateTransaction(asset, amount, {
+        intermediateToken: r.intermediateToken,
+        buyRouter: r.buyRouter,
+        sellRouter: r.sellRouter,
+        minIntermediateOut: r.minIntermediateOut,
+        minFinalOut: r.minFinalOut,
+        gasReserveInAsset: r.gasReserveInAsset,
+        minProfit: r.minProfit,
+        deadline: r.deadline
+      });
   let tx;
   let gas = 0n;
   let l1Fee = 0n;
