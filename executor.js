@@ -126,8 +126,20 @@ async function main() {
     throw new Error("Candidate quote snapshot is too old or from a future block");
   }
 
-  const base = cfg.tokens.WETH, mid = cfg.tokens[c.intermediate];
-  if (!mid) throw new Error("Unknown intermediate token");
+  const base = cfg.tokens.WETH;
+  let mid = cfg.tokens[c.intermediate];
+  if (!mid && c.intermediateAddress && Number.isInteger(c.intermediateDecimals)) {
+    let discovered = [];
+    try { discovered = JSON.parse(fs.readFileSync(new URL("./new-token-watchlist.json", import.meta.url), "utf8")).tokens ?? []; } catch {}
+    const match = discovered.find(t => t.symbol === c.intermediate &&
+      ethers.isAddress(t.address) && t.address.toLowerCase() === String(c.intermediateAddress).toLowerCase() &&
+      Number(t.decimals) === c.intermediateDecimals);
+    if (match) mid = { address: match.address, decimals: match.decimals, discoveryOnly: true };
+  }
+  if (!mid) throw new Error("Unknown or unverified intermediate token; refusing execution");
+  if (c.intermediateAddress && mid.address.toLowerCase() !== c.intermediateAddress.toLowerCase()) {
+    throw new Error("Candidate intermediate token address mismatch");
+  }
   const asset = ethers.getAddress(base.address), intermediate = ethers.getAddress(mid.address);
   const buy = ethers.getAddress(c.buyRouter), sell = ethers.getAddress(c.sellRouter);
   const configuredPool = await new ethers.Contract(cfg.aaveAddressesProvider, [
