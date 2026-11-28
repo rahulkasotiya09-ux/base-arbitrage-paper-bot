@@ -116,10 +116,19 @@ async function main() {
   if (output.chainId !== 8453 || !Array.isArray(output.candidates)) {
     throw new Error("Opportunity file has the wrong chain or invalid candidate list");
   }
-  const compatible = output.candidates.filter(x =>
-    x.base === "WETH" && x.executorCompatible === true && x.buyRouter && x.sellRouter && x.intermediate &&
-    /^\d+$/.test(String(x.estimatedNetProfitRaw ?? ""))
-  );
+  const v3Config = cfg.venues.find(v => v.type === "v3");
+  const v3ExecutionReady = v3Config
+    ? Number(await executor.routerType(v3Config.router).catch(() => 0n)) === 2
+    : false;
+  const venueByName = new Map(cfg.venues.map(v => [v.name, v]));
+  const compatible = output.candidates.filter(x => {
+    const buyVenue = venueByName.get(x.buyVenue);
+    const sellVenue = venueByName.get(x.sellVenue);
+    const requiresV3 = buyVenue?.type === "v3" || sellVenue?.type === "v3";
+    return x.base === "WETH" && x.executorCompatible === true && x.buyRouter && x.sellRouter && x.intermediate &&
+      (!requiresV3 || v3ExecutionReady) &&
+      /^\d+$/.test(String(x.estimatedNetProfitRaw ?? ""));
+  });
   compatible.sort((a, b) => {
     const av = BigInt(a.estimatedNetProfitRaw);
     const bv = BigInt(b.estimatedNetProfitRaw);
