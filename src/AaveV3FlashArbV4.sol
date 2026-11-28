@@ -82,7 +82,8 @@ interface IUnlockCallback {
     function unlockCallback(bytes calldata data) external returns (bytes memory);
 }
 
-/// @notice Two-hop V2/V3/V4/Aerodrome/Slipstream Aave flash-arbitrage receiver.
+/// Compact revert-code map: E01=wrapped-native-only; E02=post-repayment profit; E03=pool allowance; E04-E08=V4 delta/key/callback/settlement; E09=output delta; E10-E13=V4/token approval validation; E14=callback; E15=V2 factory; E16=unknown router; E17-E18=V4 callback/delta; E19=wrapped-native; E20=router allowlist.
+// @notice Two-hop V2/V3/V4/Aerodrome/Slipstream Aave flash-arbitrage receiver.
 /// @dev Still experimental: use only on a fork until independently audited.
 contract AaveV3FlashArbV4 is IUnlockCallback {
     address public immutable owner;
@@ -201,8 +202,8 @@ contract AaveV3FlashArbV4 is IUnlockCallback {
     constructor(address addressesProvider, address ownerAddress, address wrappedNativeAddress, address poolManagerAddress) {
         require(addressesProvider != address(0) && addressesProvider.code.length > 0, "BAD_PROVIDER");
         require(ownerAddress != address(0), "ZERO_OWNER");
-        require(wrappedNativeAddress != address(0) && wrappedNativeAddress.code.length > 0, "BAD_WRAPPED_NATIVE");
-        require(poolManagerAddress != address(0) && poolManagerAddress.code.length > 0, "BAD_V4_POOL_MANAGER");
+        require(wrappedNativeAddress != address(0) && wrappedNativeAddress.code.length > 0, "E19");
+        require(poolManagerAddress != address(0) && poolManagerAddress.code.length > 0, "E13");
         address poolAddress = IPoolAddressesProvider(addressesProvider).getPool();
         require(poolAddress != address(0) && poolAddress.code.length > 0, "BAD_POOL");
         owner = ownerAddress;
@@ -287,7 +288,7 @@ contract AaveV3FlashArbV4 is IUnlockCallback {
         require(amount > 0 && route.minIntermediateOut > 0 && route.minFinalOut > 0, "M1");
         require(route.gasReserveInAsset > 0 && route.minProfit > 0, "M2");
         require(route.deadline >= block.timestamp && route.deadline <= block.timestamp + 120, "BAD_DEADLINE");
-        require(approvedRouter[route.buyRouter] && approvedRouter[route.sellRouter], "ROUTER_NOT_ALLOWED");
+        require(approvedRouter[route.buyRouter] && approvedRouter[route.sellRouter], "E20");
         loanAsset = asset;
         loanAmount = amount;
         startingBalance = IERC20(asset).balanceOf(address(this));
@@ -297,8 +298,8 @@ contract AaveV3FlashArbV4 is IUnlockCallback {
         v4RouteActive = true;
         pool.flashLoanSimple(address(this), asset, amount, abi.encode(route), 0);
         require(callbackSeen, "NO_CALLBACK");
-        require(IERC20(asset).balanceOf(address(this)) >= startingBalance + route.gasReserveInAsset + route.minProfit, "POST_REPAYMENT_PROFIT_CHECK");
-        require(IERC20(asset).allowance(address(this), address(pool)) == 0, "POOL_ALLOWANCE_NOT_CLEARED");
+        require(IERC20(asset).balanceOf(address(this)) >= startingBalance + route.gasReserveInAsset + route.minProfit, "E02");
+        require(IERC20(asset).allowance(address(this), address(pool)) == 0, "E03");
         active = false;
         multiRouteActive = false;
         v4RouteActive = false;
@@ -338,7 +339,7 @@ contract AaveV3FlashArbV4 is IUnlockCallback {
         require(route.deadline >= block.timestamp && route.deadline <= block.timestamp + 120, "BAD_DEADLINE");
         if (routerType[route.buyRouter] == 3) _validateV4Leg(route.buyRouter, route.buyFee, route.buyTickSpacing);
         if (routerType[route.sellRouter] == 3) _validateV4Leg(route.sellRouter, route.sellFee, route.sellTickSpacing);
-        require(approvedRouter[route.buyRouter] && approvedRouter[route.sellRouter], "ROUTER_NOT_ALLOWED");
+        require(approvedRouter[route.buyRouter] && approvedRouter[route.sellRouter], "E20");
 
         loanAsset = asset;
         loanAmount = amount;
@@ -348,8 +349,8 @@ contract AaveV3FlashArbV4 is IUnlockCallback {
         v4RouteActive = true;
         pool.flashLoanSimple(address(this), asset, amount, abi.encode(route), 0);
         require(callbackSeen, "NO_CALLBACK");
-        require(IERC20(asset).balanceOf(address(this)) >= startingBalance + route.gasReserveInAsset + route.minProfit, "POST_REPAYMENT_PROFIT_CHECK");
-        require(IERC20(asset).allowance(address(this), address(pool)) == 0, "POOL_ALLOWANCE_NOT_CLEARED");
+        require(IERC20(asset).balanceOf(address(this)) >= startingBalance + route.gasReserveInAsset + route.minProfit, "E02");
+        require(IERC20(asset).allowance(address(this), address(pool)) == 0, "E03");
         active = false;
         v4RouteActive = false;
         loanAsset = address(0);
@@ -358,11 +359,11 @@ contract AaveV3FlashArbV4 is IUnlockCallback {
     }
 
     function _start(address asset, uint256 amount, Route memory route) internal {
-        require(asset == wrappedNative, "ASSET_MUST_BE_WRAPPED_NATIVE");
+        require(asset == wrappedNative, "E01");
         require(approvedToken[asset], "ASSET_NOT_ALLOWED");
         require(approvedToken[route.intermediateToken], "MID_NOT_ALLOWED");
         require(asset != route.intermediateToken, "SAME_TOKEN");
-        require(approvedRouter[route.buyRouter] && approvedRouter[route.sellRouter], "ROUTER_NOT_ALLOWED");
+        require(approvedRouter[route.buyRouter] && approvedRouter[route.sellRouter], "E20");
         require(amount > 0, "ZERO_AMOUNT");
         require(route.minIntermediateOut > 0 && route.minFinalOut > 0, "ZERO_MIN_OUT");
         require(route.gasReserveInAsset > 0, "ZERO_GAS_RESERVE");
@@ -378,8 +379,8 @@ contract AaveV3FlashArbV4 is IUnlockCallback {
         pool.flashLoanSimple(address(this), asset, amount, abi.encode(route), 0);
 
         uint256 requiredResidual = startingBalance + route.gasReserveInAsset + route.minProfit;
-        require(IERC20(asset).balanceOf(address(this)) >= requiredResidual, "POST_REPAYMENT_PROFIT_CHECK");
-        require(IERC20(asset).allowance(address(this), address(pool)) == 0, "POOL_ALLOWANCE_NOT_CLEARED");
+        require(IERC20(asset).balanceOf(address(this)) >= requiredResidual, "E02");
+        require(IERC20(asset).allowance(address(this), address(pool)) == 0, "E03");
         require(callbackSeen, "NO_CALLBACK");
 
         active = false;
@@ -397,7 +398,7 @@ contract AaveV3FlashArbV4 is IUnlockCallback {
     ) external returns (bool) {
         require(msg.sender == address(pool), "ONLY_POOL");
         require(initiator == address(this), "BAD_INITIATOR");
-        require(active && !callbackSeen, "UNEXPECTED_CALLBACK");
+        require(active && !callbackSeen, "E14");
         require(asset == loanAsset && asset == wrappedNative && amount == loanAmount, "LOAN_MISMATCH");
         callbackSeen = true;
 
@@ -451,7 +452,7 @@ contract AaveV3FlashArbV4 is IUnlockCallback {
             (fee == 500 && tickSpacing == 10) ||
             (fee == 3000 && tickSpacing == 60) ||
             (fee == 10000 && tickSpacing == 200),
-            "UNSUPPORTED_V4_POOL_KEY"
+            "E05"
         );
     }
 
@@ -463,7 +464,7 @@ contract AaveV3FlashArbV4 is IUnlockCallback {
         require(approvedRouter[router] && router.code.length > 0, "BAD_ROUTER");
         if (kind == 1) {
             address factory = IV2Router(router).factory();
-            require(factory != address(0) && factory == routerFactory[router] && factory.code.length > 0, "V2_FACTORY_MISMATCH");
+            require(factory != address(0) && factory == routerFactory[router] && factory.code.length > 0, "E15");
         } else if (kind == 2) {
             require(fee == 500 || fee == 3000 || fee == 10000, "UNSUPPORTED_V3_FEE");
             address poolAddress = IV3Factory(routerFactory[router]).getPool(tokenIn, tokenOut, fee);
@@ -486,7 +487,7 @@ contract AaveV3FlashArbV4 is IUnlockCallback {
             address poolAddress = ISlipstreamFactory(factory).getPool(tokenIn, tokenOut, tickSpacing);
             require(poolAddress != address(0) && poolAddress.code.length > 0, "S6");
         } else {
-            revert("UNKNOWN_ROUTER_TYPE");
+            revert("E16");
         }
     }
 
@@ -574,22 +575,22 @@ contract AaveV3FlashArbV4 is IUnlockCallback {
         v4UnlockActive = true;
         v4CallbackSeen = false;
         bytes memory result = poolManager.unlock(abi.encode(V4SwapData(tokenIn, tokenOut, amountIn, minOut, fee, tickSpacing)));
-        require(v4CallbackSeen, "V4_CALLBACK_MISSING");
+        require(v4CallbackSeen, "E17");
         v4UnlockActive = false;
         amountOut = abi.decode(result, (uint256));
         uint256 afterIn = IERC20(tokenIn).balanceOf(address(this));
         uint256 afterOut = IERC20(tokenOut).balanceOf(address(this));
-        require(beforeIn >= afterIn && beforeIn - afterIn == amountIn, "V4_INPUT_DELTA_MISMATCH");
-        require(afterOut >= beforeOut && afterOut - beforeOut == amountOut && amountOut >= minOut, "V4_OUTPUT_DELTA_MISMATCH");
+        require(beforeIn >= afterIn && beforeIn - afterIn == amountIn, "E06");
+        require(afterOut >= beforeOut && afterOut - beforeOut == amountOut && amountOut >= minOut, "E04");
     }
 
     function unlockCallback(bytes calldata data) external returns (bytes memory) {
-        require(msg.sender == address(poolManager), "ONLY_V4_POOL_MANAGER");
-        require(active && v4RouteActive && v4UnlockActive && !v4CallbackSeen, "UNEXPECTED_V4_CALLBACK");
+        require(msg.sender == address(poolManager), "E10");
+        require(active && v4RouteActive && v4UnlockActive && !v4CallbackSeen, "E07");
         v4CallbackSeen = true;
         V4SwapData memory p = abi.decode(data, (V4SwapData));
         _validateV4Leg(address(poolManager), p.fee, p.tickSpacing);
-        require(approvedToken[p.tokenIn] && approvedToken[p.tokenOut], "V4_TOKEN_NOT_ALLOWED");
+        require(approvedToken[p.tokenIn] && approvedToken[p.tokenOut], "E11");
         uint256 amountOut = _performV4PoolSwap(p);
         _settleV4Swap(p, amountOut);
         return abi.encode(amountOut);
@@ -627,7 +628,7 @@ contract AaveV3FlashArbV4 is IUnlockCallback {
         int128 inputDelta = zeroForOne ? delta0 : delta1;
         int128 outputDelta = zeroForOne ? delta1 : delta0;
         require(inputDelta < 0 && uint256(uint128(-inputDelta)) == amountIn, "V4_BAD_INPUT_DELTA");
-        require(outputDelta > 0, "V4_BAD_OUTPUT_DELTA");
+        require(outputDelta > 0, "E18");
         amountOut = uint256(uint128(outputDelta));
         require(amountOut >= minOut, "V4_MIN_OUT");
     }
@@ -635,7 +636,7 @@ contract AaveV3FlashArbV4 is IUnlockCallback {
     function _settleV4Swap(V4SwapData memory p, uint256 amountOut) internal {
         poolManager.sync(p.tokenIn);
         _safeTransfer(p.tokenIn, address(poolManager), p.amountIn);
-        require(poolManager.settle() == p.amountIn, "V4_SETTLEMENT_MISMATCH");
+        require(poolManager.settle() == p.amountIn, "E08");
         poolManager.take(p.tokenOut, address(this), amountOut);
     }
 
@@ -645,14 +646,14 @@ contract AaveV3FlashArbV4 is IUnlockCallback {
     ) internal returns (uint256 actualAmountOut) {
         require(approvedRouter[router] && router.code.length > 0, "BAD_ROUTER");
         uint8 kind = routerType[router];
-        require(kind == 1 || kind == 2, "UNKNOWN_ROUTER_TYPE");
+        require(kind == 1 || kind == 2, "E16");
         uint256 inputBefore = IERC20(tokenIn).balanceOf(address(this));
         uint256 outputBefore = IERC20(tokenOut).balanceOf(address(this));
         _safeApprove(tokenIn, router, amountIn);
 
         if (kind == 1) {
             address factory = IV2Router(router).factory();
-            require(factory != address(0) && factory == routerFactory[router] && factory.code.length > 0, "V2_FACTORY_MISMATCH");
+            require(factory != address(0) && factory == routerFactory[router] && factory.code.length > 0, "E15");
             address[] memory path = new address[](2);
             path[0] = tokenIn;
             path[1] = tokenOut;
@@ -679,7 +680,7 @@ contract AaveV3FlashArbV4 is IUnlockCallback {
         require(inputBefore >= inputAfter && inputBefore - inputAfter == amountIn, "BAD_INPUT_DELTA");
         require(outputAfter >= outputBefore, "BAD_OUTPUT_DELTA");
         actualAmountOut = outputAfter - outputBefore;
-        require(actualAmountOut >= minOut, "INSUFFICIENT_RECEIVED");
+        require(actualAmountOut >= minOut, "E09");
         _safeApprove(tokenIn, router, 0);
     }
 
@@ -695,7 +696,7 @@ contract AaveV3FlashArbV4 is IUnlockCallback {
         (bool ok0, bytes memory ret0) = token.call(
             abi.encodeWithSelector(IERC20.approve.selector, spender, 0)
         );
-        require(ok0 && (ret0.length == 0 || (ret0.length == 32 && abi.decode(ret0, (bool)))), "APPROVE_RESET_FAILED");
+        require(ok0 && (ret0.length == 0 || (ret0.length == 32 && abi.decode(ret0, (bool)))), "E12");
 
         (bool ok, bytes memory ret) = token.call(
             abi.encodeWithSelector(IERC20.approve.selector, spender, value)
