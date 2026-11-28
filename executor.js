@@ -1,7 +1,6 @@
 import "dotenv/config";
 import fs from "node:fs";
 import { ethers } from "ethers";
-import { verifyNewTokenSecurity } from "./token-security.js";
 
 const cfg = JSON.parse(fs.readFileSync(new URL("./config.json", import.meta.url), "utf8"));
 for (const key of ["RPC_URL", "EXECUTOR_ADDRESS", "EXECUTOR_CODE_HASH", "WALLET_PRIVATE_KEY"]) {
@@ -183,11 +182,6 @@ async function main() {
   if (!mid) throw new Error("Unknown or unverified intermediate token; refusing execution");
   if (c.intermediateAddress && mid.address.toLowerCase() !== c.intermediateAddress.toLowerCase()) {
     throw new Error("Candidate intermediate token address mismatch");
-  }
-  // Fresh independent GoPlus check immediately before approvals/quotes/simulation.
-  if (mid.discoveryOnly === true) {
-    const security = await verifyNewTokenSecurity(mid.address);
-    console.log("Fresh new-token security check:", JSON.stringify(security));
   }
   const asset = ethers.getAddress(base.address), intermediate = ethers.getAddress(mid.address);
   const buy = ethers.getAddress(c.buyRouter), sell = ethers.getAddress(c.sellRouter);
