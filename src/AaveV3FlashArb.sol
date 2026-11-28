@@ -66,6 +66,17 @@ contract AaveV3FlashArb {
     uint256 private loanAmount;
     uint256 private startingBalance;
 
+    struct RouteLegacy {
+        address intermediateToken;
+        address buyRouter;
+        address sellRouter;
+        uint256 minIntermediateOut;
+        uint256 minFinalOut;
+        uint256 gasReserveInAsset;
+        uint256 minProfit;
+        uint256 deadline;
+    }
+
     struct Route {
         address intermediateToken;
         address buyRouter;
@@ -74,10 +85,7 @@ contract AaveV3FlashArb {
         uint256 minFinalOut;
         uint24 buyFee;
         uint24 sellFee;
-        // Caller-supplied reserve in borrowed-asset units. The executor must
-        // calculate this from final calldata L2 + L1 fees with a safety buffer.
         uint256 gasReserveInAsset;
-        // Required retained profit after the gas reserve.
         uint256 minProfit;
         uint256 deadline;
     }
@@ -148,11 +156,29 @@ contract AaveV3FlashArb {
         emit RouterApproval(router, approved);
     }
 
-    function start(
-        address asset,
-        uint256 amount,
-        Route calldata route
-    ) external onlyOwner whenIdle {
+    // Legacy selector retained so the already-deployed V2 executor remains usable.
+    function start(address asset, uint256 amount, RouteLegacy calldata legacy) external onlyOwner whenIdle {
+        Route memory route = Route({
+            intermediateToken: legacy.intermediateToken,
+            buyRouter: legacy.buyRouter,
+            sellRouter: legacy.sellRouter,
+            minIntermediateOut: legacy.minIntermediateOut,
+            minFinalOut: legacy.minFinalOut,
+            buyFee: 0,
+            sellFee: 0,
+            gasReserveInAsset: legacy.gasReserveInAsset,
+            minProfit: legacy.minProfit,
+            deadline: legacy.deadline
+        });
+        _start(asset, amount, route);
+    }
+
+    // New selector is used only when at least one leg is a V3 route.
+    function startV3(address asset, uint256 amount, Route calldata route) external onlyOwner whenIdle {
+        _start(asset, amount, route);
+    }
+
+    function _start(address asset, uint256 amount, Route memory route) internal {
         require(asset == wrappedNative, "ASSET_MUST_BE_WRAPPED_NATIVE");
         require(approvedToken[asset], "ASSET_NOT_ALLOWED");
         require(approvedToken[route.intermediateToken], "MID_NOT_ALLOWED");
@@ -172,9 +198,6 @@ contract AaveV3FlashArb {
 
         pool.flashLoanSimple(address(this), asset, amount, abi.encode(route), 0);
 
-        // Aave must have pulled principal + premium before flashLoanSimple returns.
-        // Verify the post-repayment balance independently, not only pre-repayment
-        // solvency inside executeOperation.
         uint256 requiredResidual = startingBalance + route.gasReserveInAsset + route.minProfit;
         require(IERC20(asset).balanceOf(address(this)) >= requiredResidual, "POST_REPAYMENT_PROFIT_CHECK");
         require(IERC20(asset).allowance(address(this), address(pool)) == 0, "POOL_ALLOWANCE_NOT_CLEARED");
