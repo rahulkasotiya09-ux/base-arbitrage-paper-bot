@@ -7,6 +7,8 @@ on:
       - "src/**"
       - "scanner.js"
       - "executor.js"
+      - "token-security.js"
+      - "new-token-discovery.js"
       - "config.json"
       - ".github/workflows/v4-contract-check.yml"
   pull_request:
@@ -29,7 +31,7 @@ jobs:
         with:
           node-version: 22
       - name: Check JavaScript syntax
-        run: node --check scanner.js && node --check executor.js && node --check bot.js
+        run: node --check token-security.js && node --check new-token-discovery.js && node --check scanner.js && node --check executor.js && node --check bot.js
       - uses: foundry-rs/foundry-toolchain@v1
       - name: Compile all Solidity contracts
         run: forge build --sizes --skip test --skip script
