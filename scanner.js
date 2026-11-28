@@ -362,6 +362,7 @@ async function main() {
         continue;
       }
       let exists = false;
+      let probeFailed = false;
       try {
         let factory = factoryCache.get(venue.factory);
         if (!factory) {
@@ -384,11 +385,12 @@ async function main() {
         // The actual venue quote is the authoritative pool/liquidity check.
         poolProbeStats.probeErrors++;
         poolProbeStats.probeErrorsAllowedToQuote++;
+        probeFailed = true;
         exists = true;
       }
       if (exists) {
         routeableVenueKeys.add(key);
-        poolProbeStats.poolsFound++;
+        if (!probeFailed) poolProbeStats.poolsFound++;
         anyExists = true;
       }
     }
