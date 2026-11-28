@@ -20,7 +20,14 @@ const fallbackRpcUrls = (process.env.RPC_FALLBACK_URLS ??
   .split(",").map(url => url.trim()).filter(Boolean);
 const quoteRpcUrls = [...new Set([rpc, ...fallbackRpcUrls, configuredRpc])];
 const quoteProviders = quoteRpcUrls.map(url => new ethers.JsonRpcProvider(url, cfg.chainId, { staticNetwork: true }));
-const quoteRetryStats = { retries: 0, recovered: 0, exhausted: 0 };
+const quoteEndpointStats = quoteRpcUrls.map((url, index) => {
+  let host = `custom-rpc-${index + 1}`;
+  try { host = new URL(url).hostname; } catch {}
+  return { endpoint: host, calls: 0, successes: 0, failures: 0, consecutiveTransientFailures: 0,
+    totalLatencyMs: 0, maxLatencyMs: 0, failureKinds: {} };
+});
+const quoteEndpointCooldownUntil = quoteRpcUrls.map(() => 0);
+const quoteRetryStats = { retries: 0, recovered: 0, exhausted: 0, skippedCoolingEndpoints: 0 };
 let quoteProviderCursor = 0;
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
 const V2_ABI = ["function getAmountsOut(uint amountIn,address[] calldata path) view returns (uint[] memory amounts)"];
@@ -37,6 +44,32 @@ const AAVE_PROVIDER_ABI = ["function getPool() view returns (address)"];
 const AAVE_POOL_ABI = ["function FLASHLOAN_PREMIUM_TOTAL() view returns (uint128)"];
 const AAVE_RESERVE_ABI = ["function balanceOf(address) view returns (uint256)"];
 const AAVE_PROVIDER = cfg.aaveAddressesProvider;
+const L1_FEE_ORACLE = "0x420000000000000000000000000000000000000F";
+const L1_FEE_IFACE = new ethers.Interface(["function getL1Fee(bytes data) view returns (uint256)"]);
+const EXECUTOR_CALL_IFACE = new ethers.Interface([
+  "function start(address asset,uint256 amount,(address intermediateToken,address buyRouter,address sellRouter,uint256 minIntermediateOut,uint256 minFinalOut,uint256 gasReserveInAsset,uint256 minProfit,uint256 deadline) route)",
+  "function startV3(address asset,uint256 amount,(address intermediateToken,address buyRouter,address sellRouter,uint256 minIntermediateOut,uint256 minFinalOut,uint24 buyFee,uint24 sellFee,uint256 gasReserveInAsset,uint256 minProfit,uint256 deadline) route)"
+]);
+const SCANNER_SLIPPAGE_BPS = BigInt(process.env.SLIPPAGE_BPS ?? "30");
+async function estimateCandidateL1Fee(candidate, amountIn, midOut, baseOut, blockTag) {
+  const minMid = midOut * (10000n - SCANNER_SLIPPAGE_BPS) / 10000n;
+  const minBase = baseOut * (10000n - SCANNER_SLIPPAGE_BPS) / 10000n;
+  const deadline = BigInt(Math.floor(Date.now() / 1000) + 45);
+  const hasV3 = candidate.buy.type === "v3" || candidate.sell.type === "v3";
+  const data = hasV3
+    ? EXECUTOR_CALL_IFACE.encodeFunctionData("startV3", [
+        cfg.tokens.WETH.address, amountIn,
+        [candidate.midToken.address, candidate.buy.router, candidate.sell.router, minMid, minBase,
+          Number(candidate.buyFee ?? 0), Number(candidate.sellFee ?? 0), 1n, 1n, deadline]
+      ])
+    : EXECUTOR_CALL_IFACE.encodeFunctionData("start", [
+        cfg.tokens.WETH.address, amountIn,
+        [candidate.midToken.address, candidate.buy.router, candidate.sell.router, minMid, minBase, 1n, 1n, deadline]
+      ]);
+  const call = L1_FEE_IFACE.encodeFunctionData("getL1Fee", [data]);
+  const raw = await provider.call({ to: L1_FEE_ORACLE, data: call }, blockTag);
+  return L1_FEE_IFACE.decodeFunctionResult("getL1Fee", raw)[0];
+}
 
 // Build venue contracts against each quote endpoint; the primary provider remains
 // responsible for the canonical scan block and executor-side verification.
@@ -96,8 +129,16 @@ async function quote(venue, tokenIn, tokenOut, amountIn, fee, blockTag) {
   venueStats.calls++;
   const firstProvider = quoteProviderCursor++ % quoteProviders.length;
   let lastError;
-  for (let attempt = 0; attempt < quoteProviders.length; attempt++) {
-    const providerIndex = (firstProvider + attempt) % quoteProviders.length;
+  const now = Date.now();
+  const eligible = Array.from({ length: quoteProviders.length }, (_, offset) => (firstProvider + offset) % quoteProviders.length)
+    .filter(index => quoteEndpointCooldownUntil[index] <= now);
+  quoteRetryStats.skippedCoolingEndpoints += quoteProviders.length - eligible.length;
+  const providerOrder = eligible.length ? eligible : [firstProvider];
+  for (let attempt = 0; attempt < providerOrder.length; attempt++) {
+    const providerIndex = providerOrder[attempt];
+    const endpointStats = quoteEndpointStats[providerIndex];
+    const startedAt = Date.now();
+    endpointStats.calls++;
     try {
       const contract = quoteContracts[providerIndex].get(venue.name);
       let result;
@@ -129,12 +170,31 @@ async function quote(venue, tokenIn, tokenOut, amountIn, fee, blockTag) {
         }, { blockTag });
         result = q.amountOut ?? q[0];
       }
+      const elapsed = Date.now() - startedAt;
+      endpointStats.successes++;
+      endpointStats.consecutiveTransientFailures = 0;
+      endpointStats.totalLatencyMs += elapsed;
+      endpointStats.maxLatencyMs = Math.max(endpointStats.maxLatencyMs, elapsed);
+      quoteEndpointCooldownUntil[providerIndex] = 0;
       venueStats.successes++;
       if (attempt > 0) quoteRetryStats.recovered++;
       return result;
     } catch (error) {
+      const elapsed = Date.now() - startedAt;
+      endpointStats.failures++;
+      endpointStats.totalLatencyMs += elapsed;
+      endpointStats.maxLatencyMs = Math.max(endpointStats.maxLatencyMs, elapsed);
       lastError = error;
       const kind = classifyQuoteError(error);
+      endpointStats.failureKinds[kind] = (endpointStats.failureKinds[kind] ?? 0) + 1;
+      if (kind === "rpc_transient" || kind === "rpc_rate_limited") {
+        endpointStats.consecutiveTransientFailures++;
+        if (endpointStats.consecutiveTransientFailures >= 3) {
+          quoteEndpointCooldownUntil[providerIndex] = Date.now() + 20000;
+        }
+      } else {
+        endpointStats.consecutiveTransientFailures = 0;
+      }
       // A genuine missing-pool/revert result is not an RPC outage; don't waste
       // time asking every endpoint the same question.
       if (kind === "no_pool_or_liquidity") break;
@@ -232,6 +292,53 @@ async function main() {
     scanConcurrency: SCAN_CONCURRENCY
   };
   const tasks = [];
+  const poolProbeStats = { pairsChecked: 0, poolsFound: 0, tasksSkippedNoPool: 0, probeErrors: 0 };
+  const routeableVenueKeys = new Set();
+  const poolProbeTasks = [];
+  const wethForProbe = cfg.tokens.WETH;
+  const factoryCache = new Map();
+  async function hasConfiguredPool(venue, token) {
+    if (venue.type === "v4") return true; // Quoter is the authoritative no-hook pool check for V4.
+    const fees = feeOptions(venue);
+    for (const fee of fees) {
+      const key = [venue.name, token.address.toLowerCase(), String(fee)].join(":");
+      if (routeableVenueKeys.has(key)) return true;
+      let exists = false;
+      try {
+        let factory = factoryCache.get(venue.factory);
+        if (!factory) {
+          const abi = venue.type === "v3"
+            ? ["function getPool(address,address,uint24) view returns (address)"]
+            : venue.type === "aerodrome"
+              ? ["function getPool(address,address,bool) view returns (address)"]
+              : ["function getPair(address,address) view returns (address)"];
+          factory = new ethers.Contract(venue.factory, abi, provider);
+          factoryCache.set(venue.factory, factory);
+        }
+        const poolAddress = venue.type === "v3"
+          ? await factory.getPool(wethForProbe.address, token.address, fee, { blockTag: block })
+          : venue.type === "aerodrome"
+            ? await factory.getPool(wethForProbe.address, token.address, Boolean(fee), { blockTag: block })
+            : await factory.getPair(wethForProbe.address, token.address, { blockTag: block });
+        exists = poolAddress !== ethers.ZeroAddress && (await provider.getCode(poolAddress, block)) !== "0x";
+      } catch { poolProbeStats.probeErrors++; }
+      if (exists) {
+        routeableVenueKeys.add(key);
+        poolProbeStats.poolsFound++;
+        return true;
+      }
+    }
+    return false;
+  }
+  for (const [midName, midToken] of tokenEntries) {
+    if (midName === "WETH" || midToken.address.toLowerCase() === wethForProbe.address.toLowerCase()) continue;
+    for (const venue of scanVenues) poolProbeTasks.push({ midName, midToken, venue });
+  }
+  poolProbeStats.pairsChecked = poolProbeTasks.length;
+  await runBounded(poolProbeTasks, Math.min(SCAN_CONCURRENCY, 6), async task => {
+    await hasConfiguredPool(task.venue, task.midToken);
+  });
+  stats.poolProbe = poolProbeStats;
   for (const amounts of cfg.scanAmounts) {
     const baseToken = cfg.tokens[amounts.token];
     if (!baseToken || amounts.token !== "WETH") continue;
@@ -246,6 +353,12 @@ async function main() {
         for (const buy of scanVenues) for (const sell of scanVenues) {
           if (buy.name === sell.name) continue;
           for (const buyFee of feeOptions(buy)) for (const sellFee of feeOptions(sell)) {
+            const buyPoolKey = [buy.name, midToken.address.toLowerCase(), String(buyFee)].join(":");
+            const sellPoolKey = [sell.name, midToken.address.toLowerCase(), String(sellFee)].join(":");
+            if (!routeableVenueKeys.has(buyPoolKey) || !routeableVenueKeys.has(sellPoolKey)) {
+              poolProbeStats.tasksSkippedNoPool++;
+              continue;
+            }
             tasks.push({ amounts, baseToken, midName, midToken, amountText, amountIn, buy, sell, buyFee, sellFee });
           }
         }
@@ -273,7 +386,18 @@ async function main() {
     const scannerGasUnits = buy.type === "v4" || sell.type === "v4" ? 750000n
       : buy.type === "v3" && sell.type === "v3" ? 550000n
       : buy.type === "v3" || sell.type === "v3" ? 450000n : 350000n;
-    const gasCostBase = scannerGasUnits * gasPrice;
+    const l2GasCostBase = scannerGasUnits * gasPrice;
+    if (gross <= l2GasCostBase) { stats.rejectedAfterGas++; return; }
+    let l1DataFeeBase;
+    try {
+      l1DataFeeBase = await estimateCandidateL1Fee(
+        { midToken, buy, sell, buyFee, sellFee }, amountIn, midOut, baseOut, block
+      );
+    } catch (error) {
+      stats.l1FeeEstimateFailures = (stats.l1FeeEstimateFailures ?? 0) + 1;
+      return; // Never label a route profitable when its L1 fee could not be estimated.
+    }
+    const gasCostBase = l2GasCostBase + l1DataFeeBase;
     if (gross <= gasCostBase) { stats.rejectedAfterGas++; return; }
     const net = gross - gasCostBase;
     if (net > 0n) {
@@ -295,6 +419,9 @@ async function main() {
         flashLoanPremiumBps: premiumBps.toString(),
         grossProfit: ethers.formatUnits(gross, baseToken.decimals),
         estimatedGasCost: ethers.formatUnits(gasCostBase, baseToken.decimals),
+        estimatedL2GasCost: ethers.formatUnits(l2GasCostBase, baseToken.decimals),
+        estimatedL1DataFee: ethers.formatUnits(l1DataFeeBase, baseToken.decimals),
+        l1DataFeeIncluded: true,
         estimatedNetProfit: ethers.formatUnits(net, baseToken.decimals),
         estimatedNetProfitRaw: net.toString(),
         gasPriceWei: gasPrice.toString(),
@@ -419,7 +546,8 @@ async function main() {
     flashLoanPremiumBps: premiumBps.toString(),
     gasPriceWei: (feeData.maxFeePerGas ?? feeData.gasPrice ?? 0n).toString(),
     gasLimitEstimate: cfg.gasLimitEstimate,
-    stats: { ...stats, quoteFailureKinds, quoteVenueStats, quoteRetryStats, quoteRpcEndpoints: quoteProviders.length },
+    stats: { ...stats, quoteFailureKinds, quoteVenueStats, quoteRetryStats, quoteEndpointStats,
+      quoteRpcEndpoints: quoteProviders.length },
     candidates: rows
   };
   fs.writeFileSync("opportunities.json", JSON.stringify(output, null, 2));
@@ -434,7 +562,8 @@ async function main() {
   const discoveryOnlyCount = rows.length - executorCompatibleCount;
   console.log(`Candidate status: ${executorCompatibleCount} executor-compatible pending validation; ${discoveryOnlyCount} discovery-only (Aerodrome unsupported by current executor).`);
   for (const r of rows.slice(0, 20)) console.log(r.routeHops === 3 ? (r.route.join(" -> ") + " | " + r.amountIn + " WETH | net=" + r.estimatedNetProfit + " (discovery-only)") : (r.base + " " + r.amountIn + " | " + r.buyVenue + " -> " + r.sellVenue + " | net=" + r.estimatedNetProfit));
-  console.log("Scan diagnostics:", JSON.stringify({ ...stats, quoteFailureKinds, quoteVenueStats, quoteRetryStats, quoteRpcEndpoints: quoteProviders.length }));
+  console.log("Scan diagnostics:", JSON.stringify({ ...stats, quoteFailureKinds, quoteVenueStats, quoteRetryStats,
+    quoteEndpointStats, quoteRpcEndpoints: quoteProviders.length }));
   if (!rows.length) console.log("No candidates had positive indicative profit after Aave premium and estimated L2 gas. Final L1 fee and safety buffer are checked by executor.");
 }
 main().catch(e => { console.error(e); process.exitCode = 1; });
