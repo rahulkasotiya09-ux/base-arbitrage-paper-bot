@@ -28,7 +28,8 @@ let discoveredTokens = {};
 try {
   const watchlist = JSON.parse(fs.readFileSync(discoveredPath, "utf8"));
   for (const token of (watchlist.tokens ?? [])) {
-    if (token?.symbol && token?.address && Number.isInteger(token.decimals) &&
+    if (token?.safetyPassed === true && token?.safetyProvider === "GoPlus Token Security API" &&
+        token?.symbol && token?.address && Number.isInteger(token.decimals) &&
         !Object.prototype.hasOwnProperty.call(cfg.tokens, token.symbol)) {
       discoveredTokens[token.symbol] = {
         address: ethers.getAddress(token.address),
