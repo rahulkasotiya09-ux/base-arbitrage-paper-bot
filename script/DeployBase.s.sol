@@ -2,10 +2,11 @@
 pragma solidity ^0.8.24;
 
 import "forge-std/Script.sol";
-import "../src/AaveV3FlashArb.sol";
+import "../src/AaveV3FlashArbV4.sol";
 
-/// @notice Explicit, Base-mainnet-only deployment and initial allowlist setup.
-/// @dev Broadcast only through the separately gated GitHub deployment workflow.
+/// @notice Base-mainnet deployment and initial allowlist setup for the current V4 executor.
+/// @dev This script broadcasts only when explicitly run with --broadcast and a funded,
+/// approved deployment key. It does not change the production bot's executor address.
 contract DeployBase is Script {
     address internal constant AAVE_PROVIDER = 0xe20fCBdBfFC4Dd138cE8b2E6FBb6CB49777ad64D;
     address internal constant EXPECTED_AAVE_POOL = 0xA238Dd80C259a72e81d7e4664a9801593F98d1c5;
@@ -18,16 +19,19 @@ contract DeployBase is Script {
     address internal constant AERO = 0x940181a94A35A4569E4529A3CDfB74e38FD98631;
     address internal constant CBBTC = 0xcbb7c0000ab88b473b1f5afd9ef808440eed33bf;
 
-    // V2 and V3 routers are supported by the upgraded executor.
     address internal constant UNISWAP_V2_ROUTER = 0x4752ba5DBc23f44D87826276BF6Fd6b1C372aD24;
     address internal constant BASESWAP_V2_ROUTER = 0x327Df1E6de05895d2ab08513aaDD9313Fe505d86;
     address internal constant UNISWAP_V3_ROUTER = 0x2626664c2603336E57B271c5C0b26F421741e481;
     address internal constant UNISWAP_V3_FACTORY = 0x33128a8fC17869897dcE68Ed026d694621f6FDfD;
 
+    address internal constant AERODROME_ROUTER = 0xcF77a3Ba9A5CA399B7c97c74d54e5b1Beb874E43;
+    address internal constant AERODROME_FACTORY = 0x420DD381b31aEf6683db6B902084cB0FFECe40Da;
+    address internal constant SLIPSTREAM_ROUTER = 0xBE6D8f0d05cC4be24d5167a3eF062215bE6D18a5;
+    address internal constant SLIPSTREAM_FACTORY = 0x5e7BB104d84c7CB9B682AaC2F3d509f5F406809A;
+    address internal constant UNISWAP_V4_POOL_MANAGER = 0x498581ff718922c3f8e6a244956af099b2652b2b;
+
     event ExecutorDeployed(address indexed executor, address indexed owner, bytes32 runtimeCodeHash);
 
-
-    /// @dev Parse a 32-byte hexadecimal private key from the Actions secret without logging it.
     function _privateKeyFromEnv() internal view returns (uint256 key) {
         string memory raw = vm.envString("WALLET_PRIVATE_KEY");
         bytes memory data = bytes(raw);
@@ -55,7 +59,9 @@ contract DeployBase is Script {
         require(livePool == EXPECTED_AAVE_POOL, "AAVE_POOL_MISMATCH");
 
         vm.startBroadcast(privateKey);
-        AaveV3FlashArb executor = new AaveV3FlashArb(AAVE_PROVIDER, deployer, WETH);
+        AaveV3FlashArbV4 executor = new AaveV3FlashArbV4(
+            AAVE_PROVIDER, deployer, WETH, UNISWAP_V4_POOL_MANAGER
+        );
 
         executor.setToken(WETH, true);
         executor.setToken(USDC, true);
@@ -69,11 +75,19 @@ contract DeployBase is Script {
         executor.setRouter(UNISWAP_V2_ROUTER, true);
         executor.setRouter(BASESWAP_V2_ROUTER, true);
         executor.setV3Router(UNISWAP_V3_ROUTER, UNISWAP_V3_FACTORY, true);
+        executor.setAerodromeRouter(AERODROME_ROUTER, AERODROME_FACTORY, true);
+        executor.setSlipstreamRouter(SLIPSTREAM_ROUTER, SLIPSTREAM_FACTORY, true);
         vm.stopBroadcast();
 
         require(address(executor).code.length > 0, "DEPLOYED_CODE_MISSING");
         require(executor.owner() == deployer, "OWNER_MISMATCH");
         require(address(executor.pool()) == EXPECTED_AAVE_POOL, "DEPLOYED_POOL_MISMATCH");
+        require(address(executor.poolManager()) == UNISWAP_V4_POOL_MANAGER, "POOL_MANAGER_MISMATCH");
+        require(executor.approvedRouter(UNISWAP_V2_ROUTER), "UNISWAP_V2_NOT_REGISTERED");
+        require(executor.approvedRouter(BASESWAP_V2_ROUTER), "BASESWAP_V2_NOT_REGISTERED");
+        require(executor.approvedRouter(UNISWAP_V3_ROUTER), "UNISWAP_V3_NOT_REGISTERED");
+        require(executor.approvedRouter(AERODROME_ROUTER), "AERODROME_NOT_REGISTERED");
+        require(executor.approvedRouter(SLIPSTREAM_ROUTER), "SLIPSTREAM_NOT_REGISTERED");
         emit ExecutorDeployed(address(executor), deployer, address(executor).codehash);
     }
 }
