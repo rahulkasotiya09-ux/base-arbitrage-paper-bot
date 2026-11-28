@@ -39,7 +39,7 @@ contract AaveV3CallbackSecurityTest is Test {
 
     function testOnlyOwnerCanStart() public {
         AaveV3FlashArb receiver = new AaveV3FlashArb(ADDRESSES_PROVIDER, address(this), WETH);
-        AaveV3FlashArb.Route memory route = AaveV3FlashArb.Route({
+        AaveV3FlashArb.RouteLegacy memory route = AaveV3FlashArb.RouteLegacy({
             intermediateToken: USDC,
             buyRouter: UNISWAP_V2_ROUTER,
             sellRouter: BASESWAP_V2_ROUTER,
