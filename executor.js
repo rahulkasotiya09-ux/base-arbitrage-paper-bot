@@ -22,6 +22,7 @@ const wallet = new ethers.Wallet(process.env.WALLET_PRIVATE_KEY, provider);
 const executor = new ethers.Contract(ethers.getAddress(process.env.EXECUTOR_ADDRESS), [
   "function owner() view returns (address)",
   "function pool() view returns (address)",
+  "function poolManager() view returns (address)",
   "function wrappedNative() view returns (address)",
   "function routerFactory(address) view returns (address)",
   "function routerType(address) view returns (uint8)",
@@ -29,13 +30,15 @@ const executor = new ethers.Contract(ethers.getAddress(process.env.EXECUTOR_ADDR
   "function approvedRouter(address) view returns (bool)",
   "event ArbitrageCompleted(address indexed asset,address indexed intermediateToken,uint256 principal,uint256 premium,uint256 grossProfit)",
   "function start(address asset,uint256 amount,(address intermediateToken,address buyRouter,address sellRouter,uint256 minIntermediateOut,uint256 minFinalOut,uint256 gasReserveInAsset,uint256 minProfit,uint256 deadline) route)",
-  "function startV3(address asset,uint256 amount,(address intermediateToken,address buyRouter,address sellRouter,uint256 minIntermediateOut,uint256 minFinalOut,uint24 buyFee,uint24 sellFee,uint256 gasReserveInAsset,uint256 minProfit,uint256 deadline) route)"
+  "function startV3(address asset,uint256 amount,(address intermediateToken,address buyRouter,address sellRouter,uint256 minIntermediateOut,uint256 minFinalOut,uint24 buyFee,uint24 sellFee,uint256 gasReserveInAsset,uint256 minProfit,uint256 deadline) route)",
+  "function startV4(address asset,uint256 amount,(address intermediateToken,address buyRouter,address sellRouter,uint256 minIntermediateOut,uint256 minFinalOut,uint24 buyFee,uint24 sellFee,int24 buyTickSpacing,int24 sellTickSpacing,uint256 gasReserveInAsset,uint256 minProfit,uint256 deadline) route)"
 ], wallet);
 const routerAbi = [
   "function factory() view returns (address)",
   "function getAmountsOut(uint256 amountIn,address[] calldata path) view returns (uint256[] memory amounts)"
 ];
 const v3QuoterAbi = ["function quoteExactInputSingle((address tokenIn,address tokenOut,uint256 amountIn,uint24 fee,uint160 sqrtPriceLimitX96) params) returns (uint256 amountOut,uint160,uint32,uint256)"];
+const v4QuoterAbi = ["function quoteExactInputSingle(((address currency0,address currency1,uint24 fee,int24 tickSpacing,address hooks) poolKey,bool zeroForOne,uint128 exactAmount,bytes hookData) params) returns (uint256 amountOut,uint256 gasEstimate)"];
 async function freshQuote(venue, tokenIn, tokenOut, amountIn, fee) {
   if (venue.type === "v2") {
     const amounts = await new ethers.Contract(venue.router, routerAbi, provider).getAmountsOut(amountIn, [tokenIn, tokenOut]);
@@ -43,7 +46,23 @@ async function freshQuote(venue, tokenIn, tokenOut, amountIn, fee) {
     return amounts[1];
   }
   if (venue.type === "v3") {
-    const q = await new ethers.Contract(venue.quoter, v3QuoterAbi, provider).quoteExactInputSingle.staticCall({ tokenIn, tokenOut, amountIn, fee, sqrtPriceLimitX96: 0 });
+    const q = await new ethers.Contract(venue.quoter, v3QuoterAbi, provider).quoteExactInputSingle.staticCall({
+      tokenIn, tokenOut, amountIn, fee: Number(fee?.fee ?? fee), sqrtPriceLimitX96: 0
+    });
+    return q.amountOut ?? q[0];
+  }
+  if (venue.type === "v4") {
+    if (amountIn > (2n ** 128n - 1n)) throw new Error("V4 quote amount exceeds uint128");
+    const a = BigInt(tokenIn), b = BigInt(tokenOut);
+    const params = {
+      poolKey: {
+        currency0: a < b ? tokenIn : tokenOut,
+        currency1: a < b ? tokenOut : tokenIn,
+        fee: Number(fee?.fee), tickSpacing: Number(fee?.tickSpacing), hooks: ethers.ZeroAddress
+      },
+      zeroForOne: a < b, exactAmount: amountIn, hookData: "0x"
+    };
+    const q = await new ethers.Contract(venue.quoter, v4QuoterAbi, provider).quoteExactInputSingle.staticCall(params);
     return q.amountOut ?? q[0];
   }
   throw new Error("Unsupported DEX venue type");
@@ -114,6 +133,7 @@ async function main() {
     throw new Error("Deployed contract gas-reserve asset is not the configured WETH");
   }
 
+  const v4ExecutionEnabled = process.env.EXECUTOR_V4_ENABLED === "true";
   const output = JSON.parse(fs.readFileSync(new URL("./opportunities.json", import.meta.url), "utf8"));
   if (output.chainId !== 8453 || !Array.isArray(output.candidates)) {
     throw new Error("Opportunity file has the wrong chain or invalid candidate list");
@@ -126,6 +146,7 @@ async function main() {
     const buyVenue = venueByName.get(x.buyVenue);
     const sellVenue = venueByName.get(x.sellVenue);
     if (x.base !== "WETH" || x.executorCompatible !== true ||
+        ((x.buyType === "v4" || x.sellType === "v4") && !v4ExecutionEnabled) ||
         !x.buyRouter || !x.sellRouter || !x.intermediate ||
         !/^\d+$/.test(String(x.estimatedNetProfitRaw ?? "")) ||
         !buyVenue?.router || !sellVenue?.router ||
@@ -143,7 +164,7 @@ async function main() {
     ]);
     if (!baseAllowed || !tokenAllowed || !buyAllowed || !sellAllowed) return false;
     for (const venue of [buyVenue, sellVenue]) {
-      const expectedType = venue.type === "v2" ? 1 : venue.type === "v3" ? 2 : 0;
+      const expectedType = venue.type === "v2" ? 1 : venue.type === "v3" ? 2 : venue.type === "v4" ? 3 : 0;
       if (!expectedType || Number(await executor.routerType(venue.router).catch(() => 0n)) !== expectedType) {
         return false;
       }
@@ -210,10 +231,28 @@ async function main() {
     { addr: sell, venue: cfg.venues.find(v => v.router?.toLowerCase() === sell.toLowerCase()), boundFactory: sellFactoryOnchain }
   ];
   for (const { addr, venue, boundFactory } of selectedVenues) {
-    if (!venue?.factory || !["v2", "v3"].includes(venue.type)) throw new Error("Router is not in the approved V2/V3 configuration");
+    if (!venue || !["v2", "v3", "v4"].includes(venue.type)) throw new Error("Router is not in the approved V2/V3/V4 configuration");
     const code = await provider.getCode(addr);
-    if (code === "0x" || boundFactory.toLowerCase() !== venue.factory.toLowerCase()) {
-      throw new Error("Router code/factory binding failed");
+    if (code === "0x") throw new Error("Configured execution venue has no deployed code");
+    if (venue.type === "v4") {
+      if (!v4ExecutionEnabled || addr.toLowerCase() !== cfg.poolManager.toLowerCase()) {
+        throw new Error("V4 execution is disabled or the PoolManager does not match config");
+      }
+      const [deployedManager, managerKind] = await Promise.all([
+        executor.poolManager(), executor.routerType(addr)
+      ]);
+      if (deployedManager.toLowerCase() !== cfg.poolManager.toLowerCase() || Number(managerKind) !== 3) {
+        throw new Error("Deployed executor is not bound to the canonical Base V4 PoolManager");
+      }
+      const legFee = addr.toLowerCase() === buy.toLowerCase() ? c.buyFee : c.sellFee;
+      if (![{fee:500,tickSpacing:10},{fee:3000,tickSpacing:60},{fee:10000,tickSpacing:200}]
+        .some(x => x.fee === Number(legFee?.fee) && x.tickSpacing === Number(legFee?.tickSpacing))) {
+        throw new Error("Unsupported V4 fee/tick-spacing pair");
+      }
+      continue;
+    }
+    if (!venue.factory || boundFactory.toLowerCase() !== venue.factory.toLowerCase()) {
+      throw new Error("Router factory binding failed");
     }
     if (venue.type === "v2") {
       const factory = await new ethers.Contract(addr, routerAbi, provider).factory();
@@ -248,7 +287,8 @@ async function main() {
   // Never trust the scanner's stored quote for execution. Re-quote both hops
   // from the configured routers immediately before estimating and simulating.
   const buyVenue = selectedVenues[0].venue, sellVenue = selectedVenues[1].venue;
-  const buyFee = Number(c.buyFee ?? 0), sellFee = Number(c.sellFee ?? 0);
+  const buyFee = Number(c.buyFee?.fee ?? c.buyFee ?? 0), sellFee = Number(c.sellFee?.fee ?? c.sellFee ?? 0);
+  const buyTickSpacing = Number(c.buyFee?.tickSpacing ?? 0), sellTickSpacing = Number(c.sellFee?.tickSpacing ?? 0);
   const freshBuyOut = await freshQuote(buyVenue, asset, intermediate, amount, buyFee);
   if (freshBuyOut <= 0n) throw new Error("Fresh buy quote is invalid");
   const freshMinIntermediateOut = minOut(freshBuyOut);
@@ -290,13 +330,16 @@ async function main() {
   const route = {
     intermediateToken: intermediate, buyRouter: buy, sellRouter: sell,
     minIntermediateOut: freshMinIntermediateOut,
-    minFinalOut: freshMinFinalOut, buyFee, sellFee,
+    minFinalOut: freshMinFinalOut, buyFee, sellFee, buyTickSpacing, sellTickSpacing,
     gasReserveInAsset: 1n, minProfit: price.minimumWethWei, deadline
   };
+  const hasV4Leg = buyVenue.type === "v4" || sellVenue.type === "v4";
   const hasV3Leg = buyVenue.type === "v3" || sellVenue.type === "v3";
-  const populate = r => hasV3Leg
-    ? executor.startV3.populateTransaction(asset, amount, r)
-    : executor.start.populateTransaction(asset, amount, {
+  const populate = r => hasV4Leg
+    ? executor.startV4.populateTransaction(asset, amount, r)
+    : hasV3Leg
+      ? executor.startV3.populateTransaction(asset, amount, r)
+      : executor.start.populateTransaction(asset, amount, {
         intermediateToken: r.intermediateToken,
         buyRouter: r.buyRouter,
         sellRouter: r.sellRouter,
