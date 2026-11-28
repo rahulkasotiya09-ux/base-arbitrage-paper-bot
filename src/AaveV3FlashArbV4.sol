@@ -406,8 +406,8 @@ contract AaveV3FlashArbV4 is IUnlockCallback {
             require(approvedToken[asset] && approvedToken[r.intermediateToken], "TOKEN_REVOKED");
             require(approvedRouter[r.buyRouter] && approvedRouter[r.sellRouter], "ROUTER_REVOKED");
             require(r.deadline >= block.timestamp && r.deadline <= block.timestamp + 120, "ROUTE_EXPIRED");
-            _validateMultiLeg(r.buyRouter, asset, r.intermediateToken, r.buyFee, r.buyTickSpacing, r.buyStable);
-            _validateMultiLeg(r.sellRouter, r.intermediateToken, asset, r.sellFee, r.sellTickSpacing, r.sellStable);
+            // Both legs were fully validated before flashLoanSimple in startMulti.
+            // Router/token configuration cannot change while active (all setters are whenIdle).
             uint256 midOut = _swapMulti(r.buyRouter, asset, r.intermediateToken, amount, r.minIntermediateOut, r.deadline, r.buyFee, r.buyTickSpacing, r.buyStable);
             _swapMulti(r.sellRouter, r.intermediateToken, asset, midOut, r.minFinalOut, r.deadline, r.sellFee, r.sellTickSpacing, r.sellStable);
             _finalizeFlashLoan(asset, r.intermediateToken, amount, premium, r.gasReserveInAsset, r.minProfit);
