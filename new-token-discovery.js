@@ -1,7 +1,6 @@
 import "dotenv/config";
 import fs from "node:fs";
 import { ethers } from "ethers";
-import { verifyNewTokenSecurity } from "./token-security.js";
 
 const OUT = new URL("./new-token-watchlist.json", import.meta.url);
 const RPC = process.env.RPC_URL || "https://mainnet.base.org";
@@ -143,7 +142,6 @@ async function main() {
   }
 
   const candidates = [...candidateMap.values()].slice(0, MAX_CANDIDATES);
-  let rejectedSecurity = 0;
   let pairRequests = 0;
   let pairRequestErrors = 0;
   let pairsReturned = 0;
@@ -183,20 +181,11 @@ async function main() {
         return null;
       }
 
-      const [meta, security] = await Promise.all([
-        metadata(address),
-        verifyNewTokenSecurity(address).catch(error => ({ passed: false, reason: error.message }))
-      ]);
+      const meta = await metadata(address);
       if (!meta) {
         metadataFailures++;
         return null;
       }
-      if (!security.passed) {
-        rejectedSecurity++;
-        console.warn("Security rejected " + address + ": " + security.reason);
-        return null;
-      }
-
       const pair = eligible[0];
       return {
         symbol: meta.symbol,
@@ -210,10 +199,7 @@ async function main() {
         priceUsd: pair.priceUsd ?? null,
         discoverySources: [...candidate.sources],
         discoveryOnly: true,
-        safetyPassed: true,
-        safetyProvider: security.provider,
-        safetyCheckedAt: security.checkedAt,
-        safetyChecks: security.checks
+        marketFiltersPassed: true
       };
     } catch (error) {
       pairRequestErrors++;
@@ -250,10 +236,9 @@ async function main() {
       "DexScreener community takeovers",
       "GeckoTerminal Base new pools (first " + GECKO_NEW_POOL_PAGES + " pages)"
     ],
-    securityPolicy: "GoPlus open-source DEX token, explicit zero buy/sell/transfer tax, and all required risk flags explicitly zero. Unknown data blocks execution.",
+    tokenEligibility: "Eligible when a Base pool meets the configured liquidity/volume/age filters; the scanner must obtain buy and sell quotes and calculate positive net profit.",
     executionEnabled: true,
-    tokens,
-    rejectedSecurity
+    tokens
   }, null, 2));
 
   console.log("Token discovery source diagnostics: " + JSON.stringify({
@@ -266,11 +251,11 @@ async function main() {
     noEligiblePair,
     metadataFailures
   }));
-  console.log("New Base token discovery: " + tokens.length + " security-passed token(s); " + rejectedSecurity + " rejected.");
+  console.log("New Base token discovery: " + tokens.length + " market-filtered token(s).");
   for (const token of tokens.slice(0, 20)) {
     console.log(token.symbol + " " + token.address + " | liq=$" + token.liquidityUsd +
       " | vol24h=$" + token.volume24hUsd + " | age=" + token.poolAgeMinutes +
-      "m | sources=" + token.discoverySources.join(",") + " | GoPlus=PASS");
+      "m | sources=" + token.discoverySources.join(","));
   }
 }
 
