@@ -6,16 +6,11 @@ import { verifyNewTokenSecurity } from "./token-security.js";
 const OUT = new URL("./new-token-watchlist.json", import.meta.url);
 const RPC = process.env.RPC_URL || "https://mainnet.base.org";
 const CHAIN_ID = 8453;
-const MIN_LIQUIDITY_USD = 5000;
-const MIN_VOLUME_24H_USD = 2000;
-const MIN_POOL_AGE_MS = 180000;
+const MIN_LIQUIDITY_USD = 1000;
+const MIN_VOLUME_24H_USD = 500;
+const MIN_POOL_AGE_MS = 60000;
 const MAX_PROFILES = 60;
 const DISCOVERY_CONCURRENCY = 3;
-const QUOTE_ASSETS = new Set([
-  "0x4200000000000000000000000000000000000006",
-  "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
-  "0xd9aaec86b65d86f6a7b5b1b0c42ffa531710b6ca"
-]);
 const known = new Set([
   "0x4200000000000000000000000000000000000006",
   "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
@@ -73,7 +68,8 @@ async function main() {
         .filter(pair =>
           pair.chainId === "base" &&
           pair.baseToken?.address?.toLowerCase() === key &&
-          QUOTE_ASSETS.has(pair.quoteToken?.address?.toLowerCase()) &&
+          ethers.isAddress(pair.quoteToken?.address) &&
+          pair.quoteToken.address.toLowerCase() !== key &&
           Number(pair.liquidity?.usd ?? 0) >= MIN_LIQUIDITY_USD &&
           Number(pair.volume?.h24 ?? 0) >= MIN_VOLUME_24H_USD &&
           Number(pair.pairCreatedAt ?? 0) > 0 &&
