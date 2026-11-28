@@ -7,7 +7,7 @@
     "scan": "node scanner.js",
     "simulate": "node executor.js",
     "executor": "node executor.js",
-    "check": "node --check scanner.js && node --check executor.js && node --check bot.js && node --check sponsored-userop.js && node --check smart-account-address.js && node --check configure-sponsored-executor.js",
+    "check": "node --check token-security.js && node --check new-token-discovery.js && node --check scanner.js && node --check executor.js && node --check bot.js && node --check sponsored-userop.js && node --check smart-account-address.js && node --check configure-sponsored-executor.js",
     "bot": "node bot.js",
     "sponsored:testnet": "node sponsored-userop.js",
     "smart-account:address": "node smart-account-address.js",
