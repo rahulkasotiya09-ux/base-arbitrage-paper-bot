@@ -13,7 +13,7 @@ const MIN_POOL_AGE_MS = 60000;
 const MAX_CANDIDATES = 200;
 // Serialize metadata RPC calls to avoid bursts against the Base RPC endpoint.
 const DISCOVERY_CONCURRENCY = 1;
-const GECKO_NEW_POOL_PAGES = 3;
+const GECKO_NEW_POOL_PAGES = 5;
 const known = new Set([
   "0x4200000000000000000000000000000000000006",
   "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
@@ -195,6 +195,13 @@ async function main() {
         decimals: meta.decimals,
         pairAddress: pair.pairAddress,
         dexId: pair.dexId,
+        eligiblePoolCount: eligible.length,
+        eligiblePools: eligible.slice(0, 10).map(p => ({
+          pairAddress: p.pairAddress, dexId: p.dexId,
+          liquidityUsd: Number(p.liquidity?.usd ?? 0),
+          volume24hUsd: Number(p.volume?.h24 ?? 0),
+          pairCreatedAt: Number(p.pairCreatedAt ?? 0)
+        })),
         liquidityUsd: Number(pair.liquidity.usd),
         volume24hUsd: Number(pair.volume.h24),
         poolAgeMinutes: Math.floor((Date.now() - Number(pair.pairCreatedAt)) / 60000),
@@ -236,7 +243,8 @@ async function main() {
       "DexScreener latest profiles",
       "DexScreener latest and top boosts",
       "DexScreener community takeovers",
-      "GeckoTerminal Base new pools (first " + GECKO_NEW_POOL_PAGES + " pages)"
+      "GeckoTerminal Base new pools (first " + GECKO_NEW_POOL_PAGES + " pages)",
+      "DexScreener token-pairs: retain up to 10 eligible pools per token"
     ],
     tokenEligibility: "Eligible when a Base pool meets the configured liquidity/volume/age filters; the scanner must obtain buy and sell quotes and calculate positive net profit.",
     executionEnabled: true,
