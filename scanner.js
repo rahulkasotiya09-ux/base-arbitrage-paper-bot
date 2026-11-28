@@ -313,18 +313,33 @@ async function main() {
   const tripleTokens = tokenEntries
     .filter(([name, token]) => name !== "WETH" && token.address.toLowerCase() !== cfg.tokens.WETH.address.toLowerCase())
     .sort((a, b) => Number(b[1].liquidityUsd ?? 0) - Number(a[1].liquidityUsd ?? 0))
-    .slice(0, 4);
+    .slice(0, 3);
   const tripleVenues = scanVenues.filter(v => ["v2", "v3", "aerodrome"].includes(v.type));
   const tripleTasks = [];
   const tripleReserveBalance = await new ethers.Contract(
     cfg.tokens.WETH.address, AAVE_RESERVE_ABI, provider
   ).balanceOf(poolAddress, { blockTag: block });
+  const tripleReserveWeth = ethers.formatUnits(tripleReserveBalance, cfg.tokens.WETH.decimals);
+  // Scale discovery sizes to the actual Aave WETH liquidity. Previously the
+  // hard-coded 0.001/0.01 WETH sizes silently skipped every route when reserve
+  // liquidity was below 0.001 WETH.
+  const reserveEligibleTripleAmounts = ["0.00001", "0.0001", "0.001", "0.01"]
+    .filter(amount => parse(amount, cfg.tokens.WETH.decimals) <= tripleReserveBalance);
+  const tripleSampleAmounts = reserveEligibleTripleAmounts.length > 2
+    ? [reserveEligibleTripleAmounts[0], reserveEligibleTripleAmounts[reserveEligibleTripleAmounts.length - 1]]
+    : reserveEligibleTripleAmounts;
+  stats.threeHopReserveWeth = tripleReserveWeth;
+  stats.threeHopSampleAmounts = tripleSampleAmounts;
+  stats.threeHopTokenCount = tripleTokens.length;
+  stats.threeHopVenueCount = tripleVenues.length;
+  stats.threeHopSkipReason = tripleSampleAmounts.length === 0 ? "Aave WETH reserve below 0.00001 WETH" :
+    tripleTokens.length < 2 ? "Fewer than two eligible intermediate tokens" :
+    tripleVenues.length < 3 ? "Fewer than three distinct supported venues" : null;
   for (const [firstName, firstToken] of tripleTokens) {
     for (const [secondName, secondToken] of tripleTokens) {
       if (firstName === secondName || firstToken.address.toLowerCase() === secondToken.address.toLowerCase()) continue;
-      for (const amountText of ["0.001", "0.01"]) {
+      for (const amountText of tripleSampleAmounts) {
         const amountIn = parse(amountText, cfg.tokens.WETH.decimals);
-        if (amountIn > tripleReserveBalance) continue;
         for (const firstVenue of tripleVenues)
           for (const secondVenue of tripleVenues)
             for (const thirdVenue of tripleVenues) {
