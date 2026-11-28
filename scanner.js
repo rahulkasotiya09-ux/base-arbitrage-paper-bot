@@ -4,9 +4,13 @@ import { ethers } from "ethers";
 
 // Scanner is advisory only; executor independently re-quotes before any simulation.
 const cfg = JSON.parse(fs.readFileSync(new URL("./config.json", import.meta.url), "utf8"));
-const rpc = process.env.RPC_URL;
-if (!rpc) throw new Error("Set RPC_URL in .env (use a trusted Ethereum RPC endpoint).");
-
+const configuredRpc = process.env.RPC_URL;
+if (!configuredRpc) throw new Error("Set RPC_URL in .env (use a trusted Ethereum RPC endpoint).");
+// The public mainnet.base.org endpoint is aggressively rate-limited. When it is
+// the workflow default, use PublicNode for general reads and retain the configured
+// endpoint as a quote fallback. Explicit user-supplied RPC URLs remain preferred.
+const rpc = configuredRpc.replace(/\\/$/, "") === "https://mainnet.base.org"
+  ? "https://base-rpc.publicnode.com" : configuredRpc;
 const provider = new ethers.JsonRpcProvider(rpc, cfg.chainId, { staticNetwork: true });
 // Keep quote traffic off a single public RPC. Optional private/provider endpoints can
 // be supplied through RPC_FALLBACK_URLS (comma-separated); public Base endpoints are
@@ -14,8 +18,8 @@ const provider = new ethers.JsonRpcProvider(rpc, cfg.chainId, { staticNetwork: t
 const fallbackRpcUrls = (process.env.RPC_FALLBACK_URLS ??
   "https://base-rpc.publicnode.com,https://base.llamarpc.com")
   .split(",").map(url => url.trim()).filter(Boolean);
-const quoteRpcUrls = [...new Set([rpc, ...fallbackRpcUrls])];
-const quoteProviders = quoteRpcUrls.map(url => new ethers.JsonRpcProvider(url, cfg.chainId));
+const quoteRpcUrls = [...new Set([rpc, ...fallbackRpcUrls, configuredRpc])];
+const quoteProviders = quoteRpcUrls.map(url => new ethers.JsonRpcProvider(url, cfg.chainId, { staticNetwork: true }));
 const quoteRetryStats = { retries: 0, recovered: 0, exhausted: 0 };
 let quoteProviderCursor = 0;
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
