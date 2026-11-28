@@ -17,7 +17,7 @@ contract DeployBase is Script {
     address internal constant WSTETH = 0xc1CBa3fCea344f92D9239c08C0568f6F2F0ee452;
     address internal constant GHO = 0x6Bb7a212910682DCFdbd5BCBb3e28FB4E8da10Ee;
     address internal constant AERO = 0x940181a94A35A4569E4529A3CDfB74e38FD98631;
-    address internal constant CBBTC = 0xcbb7c0000ab88b473b1f5afd9ef808440eed33bf;
+    address internal constant CBBTC = 0xcbB7C0000aB88B473b1f5aFd9ef808440eed33Bf;
 
     address internal constant UNISWAP_V2_ROUTER = 0x4752ba5DBc23f44D87826276BF6Fd6b1C372aD24;
     address internal constant BASESWAP_V2_ROUTER = 0x327Df1E6de05895d2ab08513aaDD9313Fe505d86;
@@ -28,7 +28,7 @@ contract DeployBase is Script {
     address internal constant AERODROME_FACTORY = 0x420DD381b31aEf6683db6B902084cB0FFECe40Da;
     address internal constant SLIPSTREAM_ROUTER = 0xBE6D8f0d05cC4be24d5167a3eF062215bE6D18a5;
     address internal constant SLIPSTREAM_FACTORY = 0x5e7BB104d84c7CB9B682AaC2F3d509f5F406809A;
-    address internal constant UNISWAP_V4_POOL_MANAGER = 0x498581ff718922c3f8e6a244956af099b2652b2b;
+    address internal constant UNISWAP_V4_POOL_MANAGER = 0x498581fF718922c3f8e6A244956aF099B2652b2b;
 
     event ExecutorDeployed(address indexed executor, address indexed owner, bytes32 runtimeCodeHash);
 
