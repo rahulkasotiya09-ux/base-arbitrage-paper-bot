@@ -27,6 +27,9 @@ const V2_ABI = ["function getAmountsOut(uint amountIn,address[] calldata path) v
 const V3_QUOTER_ABI = [
   "function quoteExactInputSingle((address tokenIn,address tokenOut,uint256 amountIn,uint24 fee,uint160 sqrtPriceLimitX96) params) returns (uint256 amountOut,uint160,uint32,uint256)"
 ];
+const AERODROME_ROUTER_ABI = [
+  "function getAmountsOut(uint256 amountIn,tuple(address from,address to,bool stable,address factory)[] routes) view returns (uint256[] amounts)"
+];
 const AAVE_PROVIDER_ABI = ["function getPool() view returns (address)"];
 const AAVE_POOL_ABI = ["function FLASHLOAN_PREMIUM_TOTAL() view returns (uint128)"];
 const AAVE_RESERVE_ABI = ["function balanceOf(address) view returns (uint256)"];
@@ -39,6 +42,7 @@ const quoteContracts = quoteProviders.map(quoteProvider => {
   for (const venue of cfg.venues) {
     if (venue.type === "v2") contracts.set(venue.name, new ethers.Contract(venue.router, V2_ABI, quoteProvider));
     if (venue.type === "v3") contracts.set(venue.name, new ethers.Contract(venue.quoter, V3_QUOTER_ABI, quoteProvider));
+    if (venue.type === "aerodrome") contracts.set(venue.name, new ethers.Contract(venue.router, AERODROME_ROUTER_ABI, quoteProvider));
   }
   return contracts;
 });
@@ -80,6 +84,11 @@ async function quote(venue, tokenIn, tokenOut, amountIn, fee, blockTag) {
       let result;
       if (venue.type === "v2") {
         const amounts = await contract.getAmountsOut(amountIn, [tokenIn.address, tokenOut.address], { blockTag });
+        result = amounts[1];
+      } else if (venue.type === "aerodrome") {
+        const amounts = await contract.getAmountsOut(amountIn, [{
+          from: tokenIn.address, to: tokenOut.address, stable: Boolean(fee), factory: venue.factory
+        }], { blockTag });
         result = amounts[1];
       } else {
         const q = await contract.quoteExactInputSingle.staticCall({
@@ -145,7 +154,7 @@ async function runBounded(items, concurrency, worker) {
   }));
 }
 
-function feeOptions(v) { return v.type === "v3" ? v.fees : [0]; }
+function feeOptions(v) { return v.type === "v3" ? v.fees : v.type === "aerodrome" ? [false, true] : [0]; }
 
 async function notifyTelegram(message) {
   const botToken = process.env.TELEGRAM_BOT_TOKEN;
@@ -167,7 +176,7 @@ async function main() {
   ]);
   if (Number(network.chainId) !== cfg.chainId) throw new Error(`RPC chain mismatch: expected ${cfg.chainId}, got ${network.chainId}`);
   for (const venue of cfg.venues) {
-    const target = venue.type === "v2" ? venue.router : venue.quoter;
+    const target = venue.type === "v3" ? venue.quoter : venue.router;
     if (!target || (await provider.getCode(target, block)) === "0x") throw new Error(`Configured ${venue.name} contract has no code at ${target}`);
   }
   const poolProvider = new ethers.Contract(AAVE_PROVIDER, AAVE_PROVIDER_ABI, provider);
@@ -179,7 +188,8 @@ async function main() {
   // routerType/factory approvals before simulation or any explicitly enabled broadcast.
   const scanVenues = cfg.venues.filter(venue =>
     (venue.type === "v2" && venue.router) ||
-    (venue.type === "v3" && venue.router && venue.factory && venue.quoter && Array.isArray(venue.fees))
+    (venue.type === "v3" && venue.router && venue.factory && venue.quoter && Array.isArray(venue.fees)) ||
+    (venue.type === "aerodrome" && venue.router && venue.factory)
   );
   if (scanVenues.length < 2) throw new Error("At least two configured V2/V3 venues are required for arbitrage scanning");
   const rows = [];
@@ -241,7 +251,7 @@ async function main() {
         sellRouter: sell.router,
         intermediateAddress: midToken.address,
         intermediateDecimals: midToken.decimals,
-        executorCompatible: true,
+        executorCompatible: buy.type !== "aerodrome" && sell.type !== "aerodrome",
         intermediateOut: ethers.formatUnits(midOut, midToken.decimals),
         intermediateOutRaw: midOut.toString(),
         finalOut: ethers.formatUnits(baseOut, baseToken.decimals),
@@ -258,7 +268,7 @@ async function main() {
         quoteBlock: block,
         l1DataFeeIncluded: false,
         executionReady: true,
-        note: "Preliminary filter only. New and established tokens use the same executor eligibility; executor still requires on-chain token/router approvals, fresh quotes, full gas accounting, and exact transaction simulation."
+        note: buy.type === "aerodrome" || sell.type === "aerodrome" ? "Aerodrome quote is discovery-only: the currently deployed executor does not implement Aerodrome route structs. Do not execute until a compatible contract is deployed and router/token approvals are verified." : "Preliminary filter only. Executor still requires on-chain token/router approvals, fresh quotes, full gas accounting, and exact transaction simulation."
       });
     }
   });
