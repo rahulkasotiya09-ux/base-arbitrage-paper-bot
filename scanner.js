@@ -129,7 +129,9 @@ async function main() {
                   buyVenue: buy.name, buyFee, sellVenue: sell.name, sellFee,
                   buyRouter: buy.type === "v2" ? buy.router : null,
                   sellRouter: sell.type === "v2" ? sell.router : null,
-                  executorCompatible: buy.type === "v2" && sell.type === "v2" && !midToken.discoveryOnly,
+                  intermediateAddress: midToken.address,
+                  intermediateDecimals: midToken.decimals,
+                  executorCompatible: buy.type === "v2" && sell.type === "v2",
                   intermediateOut: ethers.formatUnits(midOut, midToken.decimals),
                   intermediateOutRaw: midOut.toString(),
                   finalOut: ethers.formatUnits(baseOut, baseToken.decimals),
@@ -144,8 +146,8 @@ async function main() {
                   gasAdjusted: true,
                   quoteBlock: block,
                   l1DataFeeIncluded: false,
-                  executionReady: buy.type === "v2" && sell.type === "v2" && !midToken.discoveryOnly,
-                  note: "Preliminary filter only: includes Aave premium and estimated L2 gas, but excludes final-calldata Base L1 data fee and safety buffer. Executor must independently price every cost and pass exact simulation."
+                  executionReady: buy.type === "v2" && sell.type === "v2",
+                  note: "Preliminary filter only. New and established tokens use the same executor eligibility; executor still requires on-chain token/router approvals, fresh quotes, full gas accounting, and exact transaction simulation."
                 });
               }
             }
