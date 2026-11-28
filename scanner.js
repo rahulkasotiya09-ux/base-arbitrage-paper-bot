@@ -60,6 +60,9 @@ const quoteFailureSamples = [];
 const AERODROME_ROUTER_ABI = [
   "function getAmountsOut(uint256 amountIn,tuple(address from,address to,bool stable,address factory)[] routes) view returns (uint256[] amounts)"
 ];
+const SLIPSTREAM_QUOTER_ABI = [
+  "function quoteExactInputSingleV3((address tokenIn,address tokenOut,uint256 amountIn,int24 tickSpacing,uint160 sqrtPriceLimitX96) params) returns (uint256 amountOut,uint160 sqrtPriceX96After,uint32 initializedTicksCrossed,uint256 gasEstimate)"
+];
 const AAVE_PROVIDER_ABI = ["function getPool() view returns (address)"];
 const AAVE_POOL_ABI = ["function FLASHLOAN_PREMIUM_TOTAL() view returns (uint128)"];
 const AAVE_RESERVE_ABI = ["function balanceOf(address) view returns (uint256)"];
@@ -148,6 +151,7 @@ const quoteContracts = quoteProviders.map(quoteProvider => {
     if (venue.type === "v4") contracts.set(venue.name, new ethers.Contract(venue.quoter, V4_QUOTER_ABI, quoteProvider));
     if (venue.type === "v4") contracts.set(`${venue.name}:stateView`, new ethers.Contract(cfg.v4StateView, V4_STATE_VIEW_ABI, quoteProvider));
     if (venue.type === "aerodrome") contracts.set(venue.name, new ethers.Contract(venue.router, AERODROME_ROUTER_ABI, quoteProvider));
+    if (venue.type === "slipstream") contracts.set(venue.name, new ethers.Contract(venue.quoter, SLIPSTREAM_QUOTER_ABI, quoteProvider));
   }
   return contracts;
 });
@@ -263,6 +267,12 @@ async function quote(venue, tokenIn, tokenOut, amountIn, fee, blockTag) {
           from: tokenIn.address, to: tokenOut.address, stable: Boolean(fee), factory: venue.factory
         }], { blockTag });
         result = amounts[1];
+      } else if (venue.type === "slipstream") {
+        const q = await contract.quoteExactInputSingleV3.staticCall({
+          tokenIn: tokenIn.address, tokenOut: tokenOut.address, amountIn,
+          tickSpacing: Number(fee), sqrtPriceLimitX96: 0
+        }, { blockTag });
+        result = q.amountOut ?? q[0];
       } else {
         const q = await contract.quoteExactInputSingle.staticCall({
           tokenIn: tokenIn.address, tokenOut: tokenOut.address,
@@ -359,7 +369,7 @@ async function runBounded(items, concurrency, worker) {
   }));
 }
 
-function feeOptions(v) { return v.type === "v3" || v.type === "v4" ? v.fees : v.type === "aerodrome" ? [false, true] : [0]; }
+function feeOptions(v) { return v.type === "v3" || v.type === "v4" || v.type === "slipstream" ? v.fees : v.type === "aerodrome" ? [false, true] : [0]; }
 function feeKey(fee) { return fee && typeof fee === "object" ? `${fee.fee}:${fee.tickSpacing}` : String(fee); }
 
 async function notifyTelegram(message) {
@@ -392,7 +402,7 @@ async function main() {
   }
   if (Number(network.chainId) !== cfg.chainId) throw new Error(`RPC chain mismatch: expected ${cfg.chainId}, got ${network.chainId}`);
   for (const venue of cfg.venues) {
-    const target = ["v3", "v4"].includes(venue.type) ? venue.quoter : venue.router;
+    const target = ["v3", "v4", "slipstream"].includes(venue.type) ? venue.quoter : venue.router;
     if (!target || (await provider.getCode(target, block)) === "0x") throw new Error(`Configured ${venue.name} contract has no code at ${target}`);
   }
   const poolProvider = new ethers.Contract(AAVE_PROVIDER, AAVE_PROVIDER_ABI, provider);
@@ -406,9 +416,10 @@ async function main() {
     (venue.type === "v2" && venue.router) ||
     (venue.type === "v3" && venue.router && venue.factory && venue.quoter && Array.isArray(venue.fees)) ||
     (venue.type === "v4" && venue.quoter && Array.isArray(venue.fees)) ||
-    (venue.type === "aerodrome" && venue.router && venue.factory)
+    (venue.type === "aerodrome" && venue.router && venue.factory) ||
+    (venue.type === "slipstream" && venue.router && venue.factory && venue.quoter && Array.isArray(venue.fees))
   );
-  if (scanVenues.length < 2) throw new Error("At least two configured V2/V3 venues are required for arbitrage scanning");
+  if (scanVenues.length < 2) throw new Error("At least two configured venues are required for arbitrage scanning");
   const rows = [];
   const discoveryOnlyRows = [];
   const compatibilityRejectionReasons = Object.create(null);
@@ -487,7 +498,9 @@ async function main() {
             ? ["function getPool(address,address,uint24) view returns (address)"]
             : venue.type === "aerodrome"
               ? ["function getPool(address,address,bool) view returns (address)"]
-              : ["function getPair(address,address) view returns (address)"];
+              : venue.type === "slipstream"
+                ? ["function getPool(address,address,int24) view returns (address)"]
+                : ["function getPair(address,address) view returns (address)"];
           factory = new ethers.Contract(venue.factory, abi, provider);
           factoryCache.set(venue.factory, factory);
         }
@@ -495,7 +508,9 @@ async function main() {
           ? await factory.getPool(wethForProbe.address, token.address, fee, { blockTag: block })
           : venue.type === "aerodrome"
             ? await factory.getPool(wethForProbe.address, token.address, Boolean(fee), { blockTag: block })
-            : await factory.getPair(wethForProbe.address, token.address, { blockTag: block });
+            : venue.type === "slipstream"
+              ? await factory.getPool(wethForProbe.address, token.address, Number(fee), { blockTag: block })
+              : await factory.getPair(wethForProbe.address, token.address, { blockTag: block });
         exists = poolAddress !== ethers.ZeroAddress && (await provider.getCode(poolAddress, block)) !== "0x";
       } catch {
         // Do not silently discard a route because the preflight RPC failed.
