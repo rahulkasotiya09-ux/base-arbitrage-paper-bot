@@ -15,6 +15,8 @@ contract DeployBase is Script {
     address internal constant WEETH = 0x04C0599Ae5A44757c0af6F9eC3b93da8976c150A;
     address internal constant WSTETH = 0xc1CBa3fCea344f92D9239c08C0568f6F2F0ee452;
     address internal constant GHO = 0x6Bb7a212910682DCFdbd5BCBb3e28FB4E8da10Ee;
+    address internal constant AERO = 0x940181a94A35A4569E4529A3CDfB74e38FD98631;
+    address internal constant CBBTC = 0xcbb7c0000ab88b473b1f5afd9ef808440eed33bf;
 
     // V2 and V3 routers are supported by the upgraded executor.
     address internal constant UNISWAP_V2_ROUTER = 0x4752ba5DBc23f44D87826276BF6Fd6b1C372aD24;
@@ -61,6 +63,8 @@ contract DeployBase is Script {
         executor.setToken(WEETH, true);
         executor.setToken(WSTETH, true);
         executor.setToken(GHO, true);
+        executor.setToken(AERO, true);
+        executor.setToken(CBBTC, true);
 
         executor.setRouter(UNISWAP_V2_ROUTER, true);
         executor.setRouter(BASESWAP_V2_ROUTER, true);
