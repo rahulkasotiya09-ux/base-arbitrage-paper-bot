@@ -156,13 +156,19 @@ try {
   const watchlist = JSON.parse(fs.readFileSync(discoveredPath, "utf8"));
   for (const token of (watchlist.tokens ?? []).slice().sort((a, b) => Number(b.liquidityUsd ?? 0) - Number(a.liquidityUsd ?? 0)).slice(0, 75)) {
     if (token?.marketFiltersPassed === true &&
+        token?.securityPassed === true &&
+        token?.security?.passed === true &&
+        token?.security?.chainId === 8453 &&
+        Number.isFinite(Date.parse(token.security.checkedAt)) &&
+        Date.now() - Date.parse(token.security.checkedAt) <= 10 * 60 * 1000 &&
         Number(token.liquidityUsd ?? 0) >= 1000 &&
         token?.symbol && token?.address && Number.isInteger(token.decimals) &&
         !Object.prototype.hasOwnProperty.call(cfg.tokens, token.symbol)) {
       discoveredTokens[token.symbol] = {
         address: ethers.getAddress(token.address),
         decimals: token.decimals,
-        discoveryOnly: true,
+        discoveryOnly: false,
+        securityPassed: true,
         liquidityUsd: Number(token.liquidityUsd ?? 0)
       };
     }
