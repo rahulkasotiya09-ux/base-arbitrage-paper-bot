@@ -3,7 +3,9 @@ import fs from "node:fs";
 import { ethers } from "ethers";
 
 const OUT = new URL("./new-token-watchlist.json", import.meta.url);
-const RPC = process.env.RPC_URL || "https://mainnet.base.org";
+const configuredRpc = process.env.RPC_URL || "https://mainnet.base.org";
+const RPC = configuredRpc.replace(/\\/$/, "") === "https://mainnet.base.org"
+  ? "https://base-rpc.publicnode.com" : configuredRpc;
 const CHAIN_ID = 8453;
 const MIN_LIQUIDITY_USD = 1000;
 const MIN_VOLUME_24H_USD = 500;
