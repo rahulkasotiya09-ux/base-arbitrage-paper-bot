@@ -261,7 +261,7 @@ async function main() {
   const route = {
     intermediateToken: intermediate, buyRouter: buy, sellRouter: sell,
     minIntermediateOut: freshMinIntermediateOut,
-    minFinalOut: freshMinFinalOut,
+    minFinalOut: freshMinFinalOut, buyFee, sellFee,
     gasReserveInAsset: 1n, minProfit: price.minimumWethWei, deadline
   };
   const populate = r => executor.start.populateTransaction(asset, amount, r);
@@ -328,8 +328,8 @@ async function main() {
     ethUsdAnswer: price.ethUsdAnswer,
     ethUsdFeedUpdatedAt: price.updatedAt,
     aaveFlashLoanPremiumBps: flashPremiumBps.toString(),
-    freshBuyQuoteWethToIntermediate: freshBuyAmounts[1].toString(),
-    freshSellQuoteIntermediateToWeth: freshSellAmounts[1].toString(),
+    freshBuyQuoteWethToIntermediate: freshBuyOut.toString(),
+    freshSellQuoteIntermediateToWeth: freshSellOut.toString(),
     estimatedGas: gas.toString(),
     transactionGasLimitWith20PercentHeadroom: txGasLimit.toString(),
     maxL2GasCostWei: l2Cost.toString(),
