@@ -59,6 +59,25 @@ async function quote(venue, tokenIn, tokenOut, amountIn, fee, blockTag) {
   }
 }
 
+const quoteCache = new Map();
+function cachedQuote(venue, tokenIn, tokenOut, amountIn, fee, blockTag) {
+  const key = [venue.name, tokenIn.address.toLowerCase(), tokenOut.address.toLowerCase(),
+    amountIn.toString(), fee, blockTag].join(":");
+  if (!quoteCache.has(key)) quoteCache.set(key, quote(venue, tokenIn, tokenOut, amountIn, fee, blockTag));
+  return quoteCache.get(key);
+}
+const SCAN_CONCURRENCY = 8;
+async function runBounded(items, concurrency, worker) {
+  let next = 0;
+  await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, async () => {
+    while (true) {
+      const index = next++;
+      if (index >= items.length) return;
+      await worker(items[index]);
+    }
+  }));
+}
+
 function feeOptions(v) { return v.type === "v3" ? v.fees : [0]; }
 
 async function notifyTelegram(message) {
@@ -97,9 +116,10 @@ async function main() {
     routeQuotesAttempted: 0, quoteFailures: 0, insufficientFlashLiquidity: 0,
     rejectedBeforeGas: 0, rejectedAfterGas: 0, profitableIndicative: 0
   };
+  const tasks = [];
   for (const amounts of cfg.scanAmounts) {
     const baseToken = cfg.tokens[amounts.token];
-    if (!baseToken) continue;
+    if (!baseToken || amounts.token !== "WETH") continue;
     const reserve = new ethers.Contract(baseToken.address, AAVE_RESERVE_ABI, provider);
     const reserveBalance = await reserve.balanceOf(poolAddress, { blockTag: block });
     for (const [midName, midToken] of tokenEntries) {
@@ -109,58 +129,60 @@ async function main() {
         if (amountIn > reserveBalance) { stats.insufficientFlashLiquidity++; continue; }
         for (const buy of scanVenues) for (const sell of scanVenues) {
           if (buy.name === sell.name) continue;
-          for (const buyFee of feeOptions(buy)) {
-            stats.routeQuotesAttempted++;
-            const midOut = await quote(buy, baseToken, midToken, amountIn, buyFee, block);
-            if (midOut === null || midOut === 0n) { stats.quoteFailures++; continue; }
-            for (const sellFee of feeOptions(sell)) {
-              stats.routeQuotesAttempted++;
-              const baseOut = await quote(sell, midToken, baseToken, midOut, sellFee, block);
-              if (baseOut === null) { stats.quoteFailures++; continue; }
-              const premium = amountIn * premiumBps / 10000n;
-              const amountOwed = amountIn + premium;
-              // Losing routes are normal; avoid BigInt underflow and keep scanning.
-              if (baseOut <= amountOwed) { stats.rejectedBeforeGas++; continue; }
-              const gross = baseOut - amountOwed;
-              const gasPrice = feeData.maxFeePerGas ?? feeData.gasPrice;
-              if (baseToken.address.toLowerCase() !== cfg.wrappedNative.toLowerCase() || !gasPrice) continue;
-              const gasCostBase = BigInt(cfg.gasLimitEstimate) * gasPrice;
-              if (gross <= gasCostBase) { stats.rejectedAfterGas++; continue; }
-              const net = gross - gasCostBase;
-              if (net > 0n) {
-                stats.profitableIndicative++;
-                rows.push({
-                  block, base: amounts.token, intermediate: midName, newlyDiscovered: Boolean(midToken.discoveryOnly), amountIn: amountText,
-                  buyVenue: buy.name, buyFee, sellVenue: sell.name, sellFee,
-                  buyRouter: buy.type === "v2" ? buy.router : null,
-                  sellRouter: sell.type === "v2" ? sell.router : null,
-                  intermediateAddress: midToken.address,
-                  intermediateDecimals: midToken.decimals,
-                  executorCompatible: buy.type === "v2" && sell.type === "v2",
-                  intermediateOut: ethers.formatUnits(midOut, midToken.decimals),
-                  intermediateOutRaw: midOut.toString(),
-                  finalOut: ethers.formatUnits(baseOut, baseToken.decimals),
-                  finalOutRaw: baseOut.toString(),
-                  flashPremium: ethers.formatUnits(premium, baseToken.decimals),
-                  flashLoanPremiumBps: premiumBps.toString(),
-                  grossProfit: ethers.formatUnits(gross, baseToken.decimals),
-                  estimatedGasCost: ethers.formatUnits(gasCostBase, baseToken.decimals),
-                  estimatedNetProfit: ethers.formatUnits(net, baseToken.decimals),
-                  estimatedNetProfitRaw: net.toString(),
-                  gasPriceWei: gasPrice.toString(),
-                  gasAdjusted: true,
-                  quoteBlock: block,
-                  l1DataFeeIncluded: false,
-                  executionReady: buy.type === "v2" && sell.type === "v2",
-                  note: "Preliminary filter only. New and established tokens use the same executor eligibility; executor still requires on-chain token/router approvals, fresh quotes, full gas accounting, and exact transaction simulation."
-                });
-              }
-            }
+          for (const buyFee of feeOptions(buy)) for (const sellFee of feeOptions(sell)) {
+            tasks.push({ amounts, baseToken, midName, midToken, amountText, amountIn, buy, sell, buyFee, sellFee });
           }
         }
       }
     }
   }
+
+  await runBounded(tasks, SCAN_CONCURRENCY, async task => {
+    const { amounts, baseToken, midName, midToken, amountText, amountIn, buy, sell, buyFee, sellFee } = task;
+    stats.routeQuotesAttempted++;
+    const midOut = await cachedQuote(buy, baseToken, midToken, amountIn, buyFee, block);
+    if (midOut === null || midOut === 0n) { stats.quoteFailures++; return; }
+    stats.routeQuotesAttempted++;
+    const baseOut = await cachedQuote(sell, midToken, baseToken, midOut, sellFee, block);
+    if (baseOut === null) { stats.quoteFailures++; return; }
+    const premium = amountIn * premiumBps / 10000n;
+    const amountOwed = amountIn + premium;
+    if (baseOut <= amountOwed) { stats.rejectedBeforeGas++; return; }
+    const gross = baseOut - amountOwed;
+    const gasPrice = feeData.maxFeePerGas ?? feeData.gasPrice;
+    if (baseToken.address.toLowerCase() !== cfg.wrappedNative.toLowerCase() || !gasPrice) return;
+    const gasCostBase = BigInt(cfg.gasLimitEstimate) * gasPrice;
+    if (gross <= gasCostBase) { stats.rejectedAfterGas++; return; }
+    const net = gross - gasCostBase;
+    if (net > 0n) {
+      stats.profitableIndicative++;
+      rows.push({
+        block, base: amounts.token, intermediate: midName, newlyDiscovered: Boolean(midToken.discoveryOnly), amountIn: amountText,
+        buyVenue: buy.name, buyFee, sellVenue: sell.name, sellFee,
+        buyRouter: buy.type === "v2" ? buy.router : null,
+        sellRouter: sell.type === "v2" ? sell.router : null,
+        intermediateAddress: midToken.address,
+        intermediateDecimals: midToken.decimals,
+        executorCompatible: buy.type === "v2" && sell.type === "v2",
+        intermediateOut: ethers.formatUnits(midOut, midToken.decimals),
+        intermediateOutRaw: midOut.toString(),
+        finalOut: ethers.formatUnits(baseOut, baseToken.decimals),
+        finalOutRaw: baseOut.toString(),
+        flashPremium: ethers.formatUnits(premium, baseToken.decimals),
+        flashLoanPremiumBps: premiumBps.toString(),
+        grossProfit: ethers.formatUnits(gross, baseToken.decimals),
+        estimatedGasCost: ethers.formatUnits(gasCostBase, baseToken.decimals),
+        estimatedNetProfit: ethers.formatUnits(net, baseToken.decimals),
+        estimatedNetProfitRaw: net.toString(),
+        gasPriceWei: gasPrice.toString(),
+        gasAdjusted: true,
+        quoteBlock: block,
+        l1DataFeeIncluded: false,
+        executionReady: buy.type === "v2" && sell.type === "v2",
+        note: "Preliminary filter only. New and established tokens use the same executor eligibility; executor still requires on-chain token/router approvals, fresh quotes, full gas accounting, and exact transaction simulation."
+      });
+    }
+  });
   rows.sort((a,b) => {
     const av = ethers.parseUnits(a.estimatedNetProfit, cfg.tokens[a.base].decimals);
     const bv = ethers.parseUnits(b.estimatedNetProfit, cfg.tokens[b.base].decimals);
