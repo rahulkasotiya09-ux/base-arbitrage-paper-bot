@@ -23,7 +23,7 @@ const known = new Set([
   "0x940181a94a35a4569e4529a3cdfb74e38fd98631",
   "0xcbb7c0000ab88b473b1f5afd9ef808440eed33bf"
 ]);
-const provider = new ethers.JsonRpcProvider(RPC, CHAIN_ID);
+const provider = new ethers.JsonRpcProvider(RPC, CHAIN_ID, { staticNetwork: true });
 
 async function getJson(url, headers = {}) {
   const response = await fetch(url, { headers, signal: AbortSignal.timeout(12000) });
