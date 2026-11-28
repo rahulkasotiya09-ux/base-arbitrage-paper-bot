@@ -110,7 +110,7 @@ async function main() {
   // Live executor currently supports V2/V2 routes only. Skip V3 quote combinations
   // that cannot be broadcast by this executor, so scan time is spent on executable paths.
   const scanVenues = cfg.venues.filter(venue => venue.type === "v2" || venue.type === "v3");
-  if (scanVenues.length < 2) throw new Error("At least two configured V2 venues are required for executable arbitrage scanning");
+  if (scanVenues.length < 2) throw new Error("At least two configured V2/V3 venues are required for arbitrage scanning");
   const rows = [];
   const stats = {
     routeQuotesAttempted: 0, quoteFailures: 0, insufficientFlashLiquidity: 0,
