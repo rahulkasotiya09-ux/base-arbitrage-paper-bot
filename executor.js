@@ -227,10 +227,10 @@ async function main() {
     throw new Error("On-chain token/router allowlist does not authorize this exact route");
   }
   const selectedVenues = [
-    { addr: buy, venue: cfg.venues.find(v => v.router?.toLowerCase() === buy.toLowerCase()), boundFactory: buyFactoryOnchain },
-    { addr: sell, venue: cfg.venues.find(v => v.router?.toLowerCase() === sell.toLowerCase()), boundFactory: sellFactoryOnchain }
+    { addr: buy, venue: cfg.venues.find(v => v.router?.toLowerCase() === buy.toLowerCase()), boundFactory: buyFactoryOnchain, legFee: c.buyFee },
+    { addr: sell, venue: cfg.venues.find(v => v.router?.toLowerCase() === sell.toLowerCase()), boundFactory: sellFactoryOnchain, legFee: c.sellFee }
   ];
-  for (const { addr, venue, boundFactory } of selectedVenues) {
+  for (const { addr, venue, boundFactory, legFee } of selectedVenues) {
     if (!venue || !["v2", "v3", "v4"].includes(venue.type)) throw new Error("Router is not in the approved V2/V3/V4 configuration");
     const code = await provider.getCode(addr);
     if (code === "0x") throw new Error("Configured execution venue has no deployed code");
@@ -244,7 +244,6 @@ async function main() {
       if (deployedManager.toLowerCase() !== cfg.poolManager.toLowerCase() || Number(managerKind) !== 3) {
         throw new Error("Deployed executor is not bound to the canonical Base V4 PoolManager");
       }
-      const legFee = addr.toLowerCase() === buy.toLowerCase() ? c.buyFee : c.sellFee;
       if (![{fee:500,tickSpacing:10},{fee:3000,tickSpacing:60},{fee:10000,tickSpacing:200}]
         .some(x => x.fee === Number(legFee?.fee) && x.tickSpacing === Number(legFee?.tickSpacing))) {
         throw new Error("Unsupported V4 fee/tick-spacing pair");
@@ -260,7 +259,7 @@ async function main() {
     } else {
       const routerKind = await executor.routerType(addr).catch(() => 0n);
       if (Number(routerKind) !== 2) throw new Error("V3 execution requires the newly deployed V3-capable executor and V3 router approval");
-      const fee = Number(addr.toLowerCase() === buy.toLowerCase() ? c.buyFee : c.sellFee);
+      const fee = Number(legFee?.fee ?? legFee);
       if (![500, 3000, 10000].includes(fee)) throw new Error("Unsupported V3 fee tier");
       const pool = await new ethers.Contract(venue.factory, ["function getPool(address,address,uint24) view returns (address)"], provider)
         .getPool(asset, intermediate, fee);
