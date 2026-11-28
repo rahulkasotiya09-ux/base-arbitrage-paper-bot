@@ -336,6 +336,7 @@ async function main() {
   );
   if (scanVenues.length < 2) throw new Error("At least two configured V2/V3 venues are required for arbitrage scanning");
   const rows = [];
+  const discoveryOnlyRows = [];
   const stats = {
     routeQuotesAttempted: 0, quoteFailures: 0, insufficientFlashLiquidity: 0,
     rejectedBeforeGas: 0, rejectedAfterGas: 0, profitableIndicative: 0,
@@ -445,6 +446,21 @@ async function main() {
     if (baseOut <= amountOwed) { stats.rejectedBeforeGas++; return; }
     const gross = baseOut - amountOwed;
     if (baseToken.address.toLowerCase() !== cfg.wrappedNative.toLowerCase()) return;
+    const executorCompatible = ["v2", "v3"].includes(buy.type) && ["v2", "v3"].includes(sell.type);
+    if (!executorCompatible) {
+      discoveryOnlyRows.push({
+        block, base: amounts.token, routeHops: 2, route: ["WETH", midName, "WETH"],
+        intermediate: midName, intermediateAddress: midToken.address, amountIn: amountText,
+        buyVenue: buy.name, buyType: buy.type, buyFee,
+        sellVenue: sell.name, sellType: sell.type, sellFee,
+        grossSurplusAfterFlashPremium: ethers.formatUnits(gross, baseToken.decimals),
+        estimatedNetProfit: null, feeEstimateStatus: "not_estimated_executor_unsupported",
+        gasAdjusted: false, l1DataFeeIncluded: false, executorCompatible: false,
+        executionStatus: "discovery_only",
+        note: "Positive gross surplus after flash-loan premium only. Current executor does not support this venue combination; gas/L1 fees and net profit are not estimated."
+      });
+      return;
+    }
     let feeEstimate;
     try {
       feeEstimate = await estimateCandidateExecutionFees({midToken,buy,sell,buyFee,sellFee},amountIn,midOut,baseOut,block,feeData);
@@ -455,7 +471,7 @@ async function main() {
       if (feeEstimateFailureSamples.length < 5) {
         const message = String(error?.shortMessage ?? error?.reason ?? error?.message ?? "unknown")
           .replace(/https?:\/\/\S+/g, "[rpc-url]").replace(/0x[a-fA-F0-9]{64}/g, "[hex-data]").slice(0, 180);
-        feeEstimateFailureSamples.push({ code, message });
+        feeEstimateFailureSamples.push({ code, message, route: `${buy.name} -> ${sell.name}`, intermediate: midName, amountIn: amountText });
       }
       return;
     }
@@ -477,7 +493,7 @@ async function main() {
         sellRouter: sell.router,
         intermediateAddress: midToken.address,
         intermediateDecimals: midToken.decimals,
-        executorCompatible: ["v2", "v3"].includes(buy.type) && ["v2", "v3"].includes(sell.type),
+        executorCompatible: true,
         intermediateOut: ethers.formatUnits(midOut, midToken.decimals),
         intermediateOutRaw: midOut.toString(),
         finalOut: ethers.formatUnits(baseOut, baseToken.decimals),
@@ -499,9 +515,8 @@ async function main() {
         gasAdjusted: true,
         routeSpecificGasEstimate: true,
         quoteBlock: block,
-        l1DataFeeIncluded: false,
-        executionStatus: !["v2", "v3"].includes(buy.type) || !["v2", "v3"].includes(sell.type) ? "discovery_only" : "requires_executor_validation",
-        note: !["v2", "v3"].includes(buy.type) || !["v2", "v3"].includes(sell.type) ? "Discovery-only quote: the deployed executor does not support every venue in this route. Do not execute until a compatible adapter/contract is deployed and approvals are verified." : "Executor-compatible route only; not execution-ready until on-chain token/router approvals, fresh quotes, full gas accounting, and exact transaction simulation all pass."
+        executionStatus: "requires_executor_validation",
+        note: "Executor-compatible route only; not execution-ready until on-chain token/router approvals, fresh quotes, full gas accounting, and exact transaction simulation all pass."
       });
     }
   });
@@ -556,7 +571,6 @@ async function main() {
       }
     }
   }
-  const discoveryOnlyRows = [];
   stats.threeHopRoutesAttempted = tripleTasks.length;
   stats.threeHopQuoteCalls = 0;
   stats.threeHopQuoteFailures = 0;
@@ -623,11 +637,11 @@ async function main() {
   }
   console.log(`Scanned block ${block}. ${rows.length} preliminary candidate(s) written to opportunities.json`);
   const executorCompatibleCount = rows.filter(r => r.executorCompatible).length;
-  const discoveryOnlyCount = rows.length - executorCompatibleCount;
-  console.log(`Candidate status: ${executorCompatibleCount} executor-compatible pending validation; ${discoveryOnlyCount} discovery-only (Aerodrome unsupported by current executor).`);
+  const discoveryOnlyCount = discoveryOnlyRows.length;
+  console.log(`Candidate status: ${executorCompatibleCount} executor-compatible pending validation; ${discoveryOnlyCount} discovery-only (unsupported venue combinations or three-hop routes).`);
   for (const r of rows.slice(0, 20)) console.log(r.routeHops === 3 ? (r.route.join(" -> ") + " | " + r.amountIn + " WETH | net=" + r.estimatedNetProfit + " (discovery-only)") : (r.base + " " + r.amountIn + " | " + r.buyVenue + " -> " + r.sellVenue + " | net=" + r.estimatedNetProfit));
   console.log("Scan diagnostics:", JSON.stringify({ ...stats, feeEstimateFailureKinds, feeEstimateFailureSamples,
     quoteFailureKinds, quoteVenueStats, quoteRetryStats, quoteEndpointStats, quoteRpcEndpoints: quoteProviders.length }));
-  if (!rows.length) console.log("No candidates had positive indicative profit after Aave premium and estimated L2 gas. Final L1 fee and safety buffer are checked by executor.");
+  if (!rows.length) console.log("No executor-compatible candidates passed Aave premium, estimated L2 + L1 fees, and minimum-profit filters.");
 }
 main().catch(e => { console.error(e); process.exitCode = 1; });
