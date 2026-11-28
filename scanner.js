@@ -62,7 +62,8 @@ try {
       discoveredTokens[token.symbol] = {
         address: ethers.getAddress(token.address),
         decimals: token.decimals,
-        discoveryOnly: true
+        discoveryOnly: true,
+        liquidityUsd: Number(token.liquidityUsd ?? 0)
       };
     }
   }
@@ -70,6 +71,20 @@ try {
 const allTokens = { ...cfg.tokens, ...discoveredTokens };
 const tokenEntries = Object.entries(allTokens);
 const parse = (n, d) => ethers.parseUnits(String(n), d);
+
+// Add logarithmic midpoint sizes where adjacent configured samples are far apart.
+function adaptiveAmountSamples(amounts) {
+  const values = [...new Set(amounts.map(String))].sort((a, b) => Number(a) - Number(b));
+  const expanded = [...values];
+  for (let i = 1; i < values.length; i++) {
+    const low = Number(values[i - 1]), high = Number(values[i]);
+    if (low > 0 && high / low >= 1.8) {
+      const midpoint = Math.sqrt(low * high);
+      expanded.push(Number(midpoint.toPrecision(8)).toString());
+    }
+  }
+  return [...new Set(expanded)].sort((a, b) => Number(a) - Number(b));
+}
 
 const quoteFailureKinds = Object.create(null);
 const quoteVenueStats = Object.fromEntries(cfg.venues.map(venue => [venue.name, {
@@ -222,9 +237,10 @@ async function main() {
     if (!baseToken || amounts.token !== "WETH") continue;
     const reserve = new ethers.Contract(baseToken.address, AAVE_RESERVE_ABI, provider);
     const reserveBalance = await reserve.balanceOf(poolAddress, { blockTag: block });
+    const amountSamples = adaptiveAmountSamples(amounts.amounts);
     for (const [midName, midToken] of tokenEntries) {
       if (midName === amounts.token || midToken.address.toLowerCase() === baseToken.address.toLowerCase()) continue;
-      for (const amountText of amounts.amounts) {
+      for (const amountText of amountSamples) {
         const amountIn = parse(amountText, baseToken.decimals);
         if (amountIn > reserveBalance) { stats.insufficientFlashLiquidity++; continue; }
         for (const buy of scanVenues) for (const sell of scanVenues) {
@@ -291,6 +307,86 @@ async function main() {
       });
     }
   });
+
+  // Bounded three-hop discovery: WETH -> token A -> token B -> WETH.
+  // These candidates are discovery-only; the deployed executor remains two-hop.
+  const tripleTokens = tokenEntries
+    .filter(([name, token]) => name !== "WETH" && token.address.toLowerCase() !== cfg.tokens.WETH.address.toLowerCase())
+    .sort((a, b) => Number(b[1].liquidityUsd ?? 0) - Number(a[1].liquidityUsd ?? 0))
+    .slice(0, 4);
+  const tripleVenues = scanVenues.filter(v => ["v2", "v3", "aerodrome"].includes(v.type));
+  const tripleTasks = [];
+  for (const [firstName, firstToken] of tripleTokens) {
+    for (const [secondName, secondToken] of tripleTokens) {
+      if (firstName === secondName || firstToken.address.toLowerCase() === secondToken.address.toLowerCase()) continue;
+      for (const amountText of ["0.001", "0.01"]) {
+        const amountIn = parse(amountText, cfg.tokens.WETH.decimals);
+        if (amountIn > reserveBalance) continue;
+        for (const firstVenue of tripleVenues)
+          for (const secondVenue of tripleVenues)
+            for (const thirdVenue of tripleVenues) {
+              if (new Set([firstVenue.name, secondVenue.name, thirdVenue.name]).size !== 3) continue;
+              for (const firstFee of feeOptions(firstVenue))
+                for (const secondFee of feeOptions(secondVenue))
+                  for (const thirdFee of feeOptions(thirdVenue)) {
+                    tripleTasks.push({ firstName, firstToken, secondName, secondToken, amountText, amountIn,
+                      firstVenue, secondVenue, thirdVenue, firstFee, secondFee, thirdFee });
+                  }
+            }
+      }
+    }
+  }
+  stats.threeHopRoutesAttempted = tripleTasks.length;
+  stats.threeHopQuoteCalls = 0;
+  stats.threeHopQuoteFailures = 0;
+  await runBounded(tripleTasks, SCAN_CONCURRENCY, async task => {
+    const { firstName, firstToken, secondName, secondToken, amountText, amountIn,
+      firstVenue, secondVenue, thirdVenue, firstFee, secondFee, thirdFee } = task;
+    stats.threeHopQuoteCalls++;
+    const firstOut = await cachedQuote(firstVenue, cfg.tokens.WETH, firstToken, amountIn, firstFee, block);
+    if (firstOut === null || firstOut <= 0n) { stats.threeHopQuoteFailures++; return; }
+    stats.threeHopQuoteCalls++;
+    const secondOut = await cachedQuote(secondVenue, firstToken, secondToken, firstOut, secondFee, block);
+    if (secondOut === null || secondOut <= 0n) { stats.threeHopQuoteFailures++; return; }
+    stats.threeHopQuoteCalls++;
+    const finalOut = await cachedQuote(thirdVenue, secondToken, cfg.tokens.WETH, secondOut, thirdFee, block);
+    if (finalOut === null || finalOut <= 0n) { stats.threeHopQuoteFailures++; return; }
+    const premium = amountIn * premiumBps / 10000n;
+    const owed = amountIn + premium;
+    if (finalOut <= owed) { stats.rejectedBeforeGas++; return; }
+    const gross = finalOut - owed;
+    const gasPrice = feeData.maxFeePerGas ?? feeData.gasPrice;
+    if (!gasPrice) return;
+    const gasUnits = 850000n;
+    const gasCost = gasUnits * gasPrice;
+    if (gross <= gasCost) { stats.rejectedAfterGas++; return; }
+    const net = gross - gasCost;
+    stats.threeHopProfitableIndicative = (stats.threeHopProfitableIndicative ?? 0) + 1;
+    rows.push({
+      block, base: "WETH", routeHops: 3,
+      route: ["WETH", firstName, secondName, "WETH"],
+      intermediates: [
+        { symbol: firstName, address: firstToken.address, decimals: firstToken.decimals },
+        { symbol: secondName, address: secondToken.address, decimals: secondToken.decimals }
+      ],
+      amountIn: amountText,
+      venues: [firstVenue.name, secondVenue.name, thirdVenue.name],
+      fees: [firstFee, secondFee, thirdFee],
+      grossProfit: ethers.formatUnits(gross, 18),
+      estimatedGasCost: ethers.formatUnits(gasCost, 18),
+      estimatedNetProfit: ethers.formatUnits(net, 18),
+      estimatedNetProfitRaw: net.toString(),
+      gasPriceWei: gasPrice.toString(),
+      scannerGasUnits: gasUnits.toString(),
+      quoteBlock: block,
+      gasAdjusted: true,
+      l1DataFeeIncluded: false,
+      executorCompatible: false,
+      executionStatus: "discovery_only",
+      note: "Three-hop discovery-only route. Current executor supports two-hop V2/V3 routes only; exact L1 data fee and full simulation are not included."
+    });
+  });
+
   rows.sort((a,b) => {
     const av = ethers.parseUnits(a.estimatedNetProfit, cfg.tokens[a.base].decimals);
     const bv = ethers.parseUnits(b.estimatedNetProfit, cfg.tokens[b.base].decimals);
@@ -307,7 +403,7 @@ async function main() {
   fs.writeFileSync("opportunities.json", JSON.stringify(output, null, 2));
   if (rows.length) {
     const top = rows.slice(0, 5).map(r =>
-      `${r.base} ${r.amountIn} | ${r.buyVenue} -> ${r.sellVenue} | estimated net: ${r.estimatedNetProfit}`
+      r.routeHops === 3 ? (r.route.join(" -> ") + " | " + r.amountIn + " WETH | indicative net: " + r.estimatedNetProfit) : (r.base + " " + r.amountIn + " | " + r.buyVenue + " -> " + r.sellVenue + " | estimated net: " + r.estimatedNetProfit)
     ).join("\n");
     await notifyTelegram(`FlashArb scanner: ${rows.length} candidate(s) at block ${block}\n\n${top}\n\nQuotes are indicative only. NOT EXECUTABLE / NOT GUARANTEED.`);
   }
@@ -315,7 +411,7 @@ async function main() {
   const executorCompatibleCount = rows.filter(r => r.executorCompatible).length;
   const discoveryOnlyCount = rows.length - executorCompatibleCount;
   console.log(`Candidate status: ${executorCompatibleCount} executor-compatible pending validation; ${discoveryOnlyCount} discovery-only (Aerodrome unsupported by current executor).`);
-  for (const r of rows.slice(0, 20)) console.log(`${r.base} ${r.amountIn} | ${r.buyVenue} -> ${r.sellVenue} | net=${r.estimatedNetProfit}`);
+  for (const r of rows.slice(0, 20)) console.log(r.routeHops === 3 ? (r.route.join(" -> ") + " | " + r.amountIn + " WETH | net=" + r.estimatedNetProfit + " (discovery-only)") : (r.base + " " + r.amountIn + " | " + r.buyVenue + " -> " + r.sellVenue + " | net=" + r.estimatedNetProfit));
   console.log("Scan diagnostics:", JSON.stringify({ ...stats, quoteFailureKinds, quoteVenueStats, quoteRetryStats, quoteRpcEndpoints: quoteProviders.length }));
   if (!rows.length) console.log("No candidates had positive indicative profit after Aave premium and estimated L2 gas. Final L1 fee and safety buffer are checked by executor.");
 }
