@@ -27,6 +27,9 @@ const V2_ABI = ["function getAmountsOut(uint amountIn,address[] calldata path) v
 const V3_QUOTER_ABI = [
   "function quoteExactInputSingle((address tokenIn,address tokenOut,uint256 amountIn,uint24 fee,uint160 sqrtPriceLimitX96) params) returns (uint256 amountOut,uint160,uint32,uint256)"
 ];
+const V4_QUOTER_ABI = [
+  "function quoteExactInputSingle(((address currency0,address currency1,uint24 fee,int24 tickSpacing,address hooks) poolKey,bool zeroForOne,uint128 exactAmount,bytes hookData) params) returns (uint256 amountOut,uint256 gasEstimate)"
+];
 const AERODROME_ROUTER_ABI = [
   "function getAmountsOut(uint256 amountIn,tuple(address from,address to,bool stable,address factory)[] routes) view returns (uint256[] amounts)"
 ];
@@ -42,6 +45,7 @@ const quoteContracts = quoteProviders.map(quoteProvider => {
   for (const venue of cfg.venues) {
     if (venue.type === "v2") contracts.set(venue.name, new ethers.Contract(venue.router, V2_ABI, quoteProvider));
     if (venue.type === "v3") contracts.set(venue.name, new ethers.Contract(venue.quoter, V3_QUOTER_ABI, quoteProvider));
+    if (venue.type === "v4") contracts.set(venue.name, new ethers.Contract(venue.quoter, V4_QUOTER_ABI, quoteProvider));
     if (venue.type === "aerodrome") contracts.set(venue.name, new ethers.Contract(venue.router, AERODROME_ROUTER_ABI, quoteProvider));
   }
   return contracts;
@@ -50,7 +54,7 @@ const discoveredPath = new URL("./new-token-watchlist.json", import.meta.url);
 let discoveredTokens = {};
 try {
   const watchlist = JSON.parse(fs.readFileSync(discoveredPath, "utf8"));
-  for (const token of (watchlist.tokens ?? []).slice().sort((a, b) => Number(b.liquidityUsd ?? 0) - Number(a.liquidityUsd ?? 0)).slice(0, 50)) {
+  for (const token of (watchlist.tokens ?? []).slice().sort((a, b) => Number(b.liquidityUsd ?? 0) - Number(a.liquidityUsd ?? 0)).slice(0, 75)) {
     if (token?.marketFiltersPassed === true &&
         Number(token.liquidityUsd ?? 0) >= 1000 &&
         token?.symbol && token?.address && Number.isInteger(token.decimals) &&
@@ -85,6 +89,19 @@ async function quote(venue, tokenIn, tokenOut, amountIn, fee, blockTag) {
       if (venue.type === "v2") {
         const amounts = await contract.getAmountsOut(amountIn, [tokenIn.address, tokenOut.address], { blockTag });
         result = amounts[1];
+      } else if (venue.type === "v4") {
+        if (amountIn > (2n ** 128n - 1n)) throw new Error("Uniswap V4 quote amount exceeds uint128");
+        const a = BigInt(tokenIn.address), b = BigInt(tokenOut.address);
+        const currency0 = a < b ? tokenIn.address : tokenOut.address;
+        const currency1 = a < b ? tokenOut.address : tokenIn.address;
+        const params = {
+          poolKey: { currency0, currency1, fee: fee.fee, tickSpacing: fee.tickSpacing, hooks: ethers.ZeroAddress },
+          zeroForOne: a < b,
+          exactAmount: amountIn,
+          hookData: "0x"
+        };
+        const q = await contract.quoteExactInputSingle.staticCall(params, { blockTag });
+        result = q.amountOut ?? q[0];
       } else if (venue.type === "aerodrome") {
         const amounts = await contract.getAmountsOut(amountIn, [{
           from: tokenIn.address, to: tokenOut.address, stable: Boolean(fee), factory: venue.factory
@@ -154,7 +171,7 @@ async function runBounded(items, concurrency, worker) {
   }));
 }
 
-function feeOptions(v) { return v.type === "v3" ? v.fees : v.type === "aerodrome" ? [false, true] : [0]; }
+function feeOptions(v) { return v.type === "v3" || v.type === "v4" ? v.fees : v.type === "aerodrome" ? [false, true] : [0]; }
 
 async function notifyTelegram(message) {
   const botToken = process.env.TELEGRAM_BOT_TOKEN;
@@ -176,7 +193,7 @@ async function main() {
   ]);
   if (Number(network.chainId) !== cfg.chainId) throw new Error(`RPC chain mismatch: expected ${cfg.chainId}, got ${network.chainId}`);
   for (const venue of cfg.venues) {
-    const target = venue.type === "v3" ? venue.quoter : venue.router;
+    const target = ["v3", "v4"].includes(venue.type) ? venue.quoter : venue.router;
     if (!target || (await provider.getCode(target, block)) === "0x") throw new Error(`Configured ${venue.name} contract has no code at ${target}`);
   }
   const poolProvider = new ethers.Contract(AAVE_PROVIDER, AAVE_PROVIDER_ABI, provider);
@@ -189,6 +206,7 @@ async function main() {
   const scanVenues = cfg.venues.filter(venue =>
     (venue.type === "v2" && venue.router) ||
     (venue.type === "v3" && venue.router && venue.factory && venue.quoter && Array.isArray(venue.fees)) ||
+    (venue.type === "v4" && venue.quoter && Array.isArray(venue.fees)) ||
     (venue.type === "aerodrome" && venue.router && venue.factory)
   );
   if (scanVenues.length < 2) throw new Error("At least two configured V2/V3 venues are required for arbitrage scanning");
@@ -236,7 +254,8 @@ async function main() {
     // Advisory scanner estimates are route-specific and intentionally lower
     // than the executor's final measured gas. The executor still performs an
     // exact estimate, L1 fee calculation and full transaction simulation.
-    const scannerGasUnits = buy.type === "v3" && sell.type === "v3" ? 550000n
+    const scannerGasUnits = buy.type === "v4" || sell.type === "v4" ? 750000n
+      : buy.type === "v3" && sell.type === "v3" ? 550000n
       : buy.type === "v3" || sell.type === "v3" ? 450000n : 350000n;
     const gasCostBase = scannerGasUnits * gasPrice;
     if (gross <= gasCostBase) { stats.rejectedAfterGas++; return; }
@@ -251,7 +270,7 @@ async function main() {
         sellRouter: sell.router,
         intermediateAddress: midToken.address,
         intermediateDecimals: midToken.decimals,
-        executorCompatible: buy.type !== "aerodrome" && sell.type !== "aerodrome",
+        executorCompatible: ["v2", "v3"].includes(buy.type) && ["v2", "v3"].includes(sell.type),
         intermediateOut: ethers.formatUnits(midOut, midToken.decimals),
         intermediateOutRaw: midOut.toString(),
         finalOut: ethers.formatUnits(baseOut, baseToken.decimals),
@@ -267,8 +286,8 @@ async function main() {
         scannerGasUnits: scannerGasUnits.toString(),
         quoteBlock: block,
         l1DataFeeIncluded: false,
-        executionStatus: buy.type === "aerodrome" || sell.type === "aerodrome" ? "discovery_only" : "requires_executor_validation",
-        note: buy.type === "aerodrome" || sell.type === "aerodrome" ? "Aerodrome quote is discovery-only: the currently deployed executor does not implement Aerodrome route structs. Do not execute until a compatible contract is deployed and router/token approvals are verified." : "Executor-compatible route only; not execution-ready until on-chain token/router approvals, fresh quotes, full gas accounting, and exact transaction simulation all pass."
+        executionStatus: !["v2", "v3"].includes(buy.type) || !["v2", "v3"].includes(sell.type) ? "discovery_only" : "requires_executor_validation",
+        note: !["v2", "v3"].includes(buy.type) || !["v2", "v3"].includes(sell.type) ? "Discovery-only quote: the deployed executor does not support every venue in this route. Do not execute until a compatible adapter/contract is deployed and approvals are verified." : "Executor-compatible route only; not execution-ready until on-chain token/router approvals, fresh quotes, full gas accounting, and exact transaction simulation all pass."
       });
     }
   });
