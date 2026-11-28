@@ -58,6 +58,317 @@ interface IV4PoolManager {
     function take(address currency, address to, uint256 amount) external;
 }
 interface IUnlockCallback {
+    function unlockCallback(bytes calldata data) external returns (bytes memory);
+}
+
+/// @notice Two-hop V2/V3/V4 Aave flash-arbitrage receiver.
+/// @dev Still experimental: use only on a fork until independently audited.
+contract AaveV3FlashArbV4 is IUnlockCallback {
+    address public immutable owner;
+    address public immutable wrappedNative;
+    IAaveV3Pool public immutable pool;
+    IV4PoolManager public immutable poolManager;
+
+    mapping(address => bool) public approvedToken;
+    mapping(address => bool) public approvedRouter;
+    mapping(address => address) public routerFactory;
+    mapping(address => uint8) public routerType;
+
+    bool private active;
+    bool private callbackSeen;
+    address private loanAsset;
+    uint256 private loanAmount;
+    uint256 private startingBalance;
+    bool private v4RouteActive;
+    bool private v4UnlockActive;
+    bool private v4CallbackSeen;
+
+    struct RouteLegacy {
+        address intermediateToken;
+        address buyRouter;
+        address sellRouter;
+        uint256 minIntermediateOut;
+        uint256 minFinalOut;
+        uint256 gasReserveInAsset;
+        uint256 minProfit;
+        uint256 deadline;
+    }
+
+    struct Route {
+        address intermediateToken;
+        address buyRouter;
+        address sellRouter;
+        uint256 minIntermediateOut;
+        uint256 minFinalOut;
+        uint24 buyFee;
+        uint24 sellFee;
+        uint256 gasReserveInAsset;
+        uint256 minProfit;
+        uint256 deadline;
+    }
+
+    struct V4SwapData {
+        address tokenIn;
+        address tokenOut;
+        uint256 amountIn;
+        uint256 minOut;
+        uint24 fee;
+        int24 tickSpacing;
+    }
+
+    struct RouteV4 {
+        address intermediateToken;
+        address buyRouter;
+        address sellRouter;
+        uint256 minIntermediateOut;
+        uint256 minFinalOut;
+        uint24 buyFee;
+        uint24 sellFee;
+        int24 buyTickSpacing;
+        int24 sellTickSpacing;
+        uint256 gasReserveInAsset;
+        uint256 minProfit;
+        uint256 deadline;
+    }
+
+    event TokenApproval(address indexed token, bool approved);
+    event RouterApproval(address indexed router, bool approved);
+    event ArbitrageCompleted(
+        address indexed asset,
+        address indexed intermediateToken,
+        uint256 principal,
+        uint256 premium,
+        uint256 grossProfit
+    );
+
+    modifier onlyOwner() {
+        require(msg.sender == owner, "NOT_OWNER");
+        _;
+    }
+
+    modifier whenIdle() {
+        require(!active, "ACTIVE");
+        _;
+    }
+
+    constructor(address addressesProvider, address ownerAddress, address wrappedNativeAddress, address poolManagerAddress) {
+        require(addressesProvider != address(0) && addressesProvider.code.length > 0, "BAD_PROVIDER");
+        require(ownerAddress != address(0), "ZERO_OWNER");
+        require(wrappedNativeAddress != address(0) && wrappedNativeAddress.code.length > 0, "BAD_WRAPPED_NATIVE");
+        require(poolManagerAddress != address(0) && poolManagerAddress.code.length > 0, "BAD_V4_POOL_MANAGER");
+        address poolAddress = IPoolAddressesProvider(addressesProvider).getPool();
+        require(poolAddress != address(0) && poolAddress.code.length > 0, "BAD_POOL");
+        owner = ownerAddress;
+        wrappedNative = wrappedNativeAddress;
+        pool = IAaveV3Pool(poolAddress);
+        poolManager = IV4PoolManager(poolManagerAddress);
+        approvedRouter[poolManagerAddress] = true;
+        routerType[poolManagerAddress] = 3;
+    }
+
+    function setToken(address token, bool approved) external onlyOwner whenIdle {
+        require(token != address(0) && token.code.length > 0, "BAD_TOKEN");
+        approvedToken[token] = approved;
+        emit TokenApproval(token, approved);
+    }
+
+    function setRouter(address router, bool approved) external onlyOwner whenIdle {
+        require(router != address(0) && router != address(poolManager) && router.code.length > 0, "BAD_ROUTER");
+        if (approved) {
+            address factory = IV2Router(router).factory();
+            require(factory != address(0) && factory.code.length > 0, "BAD_FACTORY");
+            routerFactory[router] = factory;
+            routerType[router] = 1;
+        } else {
+            delete routerFactory[router];
+            delete routerType[router];
+        }
+        approvedRouter[router] = approved;
+        emit RouterApproval(router, approved);
+    }
+
+    function setV3Router(address router, address factory, bool approved) external onlyOwner whenIdle {
+        require(router != address(0) && router != address(poolManager) && router.code.length > 0, "BAD_V3_ROUTER");
+        if (approved) {
+            require(factory != address(0) && factory.code.length > 0, "BAD_V3_FACTORY");
+            routerFactory[router] = factory;
+            routerType[router] = 2;
+        } else {
+            delete routerFactory[router];
+            delete routerType[router];
+        }
+        approvedRouter[router] = approved;
+        emit RouterApproval(router, approved);
+    }
+
+    // Legacy selector retained so the already-deployed V2 executor remains usable.
+    function start(address asset, uint256 amount, RouteLegacy calldata legacy) external onlyOwner whenIdle {
+        Route memory route = Route({
+            intermediateToken: legacy.intermediateToken,
+            buyRouter: legacy.buyRouter,
+            sellRouter: legacy.sellRouter,
+            minIntermediateOut: legacy.minIntermediateOut,
+            minFinalOut: legacy.minFinalOut,
+            buyFee: 0,
+            sellFee: 0,
+            gasReserveInAsset: legacy.gasReserveInAsset,
+            minProfit: legacy.minProfit,
+            deadline: legacy.deadline
+        });
+        _start(asset, amount, route);
+    }
+
+    // New selector is used only when at least one leg is a V3 route.
+    function startV3(address asset, uint256 amount, Route calldata route) external onlyOwner whenIdle {
+        _start(asset, amount, route);
+    }
+
+    // V4 selector carries each pool's exact fee and tick spacing. Hooks are never accepted.
+    function startV4(address asset, uint256 amount, RouteV4 calldata route) external onlyOwner whenIdle {
+        require(asset == wrappedNative && approvedToken[asset], "ASSET_NOT_ALLOWED");
+        require(approvedToken[route.intermediateToken] && route.intermediateToken != asset, "MID_NOT_ALLOWED");
+        require(amount > 0 && route.minIntermediateOut > 0 && route.minFinalOut > 0, "BAD_AMOUNT_OR_MIN_OUT");
+        require(route.gasReserveInAsset > 0 && route.minProfit > 0, "BAD_PROFIT_GUARD");
+        require(route.deadline >= block.timestamp && route.deadline <= block.timestamp + 120, "BAD_DEADLINE");
+        if (routerType[route.buyRouter] == 3) _validateV4Leg(route.buyRouter, route.buyFee, route.buyTickSpacing);
+        if (routerType[route.sellRouter] == 3) _validateV4Leg(route.sellRouter, route.sellFee, route.sellTickSpacing);
+        require(approvedRouter[route.buyRouter] && approvedRouter[route.sellRouter], "ROUTER_NOT_ALLOWED");
+
+        loanAsset = asset;
+        loanAmount = amount;
+        startingBalance = IERC20(asset).balanceOf(address(this));
+        active = true;
+        callbackSeen = false;
+        v4RouteActive = true;
+        pool.flashLoanSimple(address(this), asset, amount, abi.encode(route), 0);
+        require(callbackSeen, "NO_CALLBACK");
+        require(IERC20(asset).balanceOf(address(this)) >= startingBalance + route.gasReserveInAsset + route.minProfit, "POST_REPAYMENT_PROFIT_CHECK");
+        require(IERC20(asset).allowance(address(this), address(pool)) == 0, "POOL_ALLOWANCE_NOT_CLEARED");
+        active = false;
+        v4RouteActive = false;
+        loanAsset = address(0);
+        loanAmount = 0;
+        startingBalance = 0;
+    }
+
+    function _start(address asset, uint256 amount, Route memory route) internal {
+        require(asset == wrappedNative, "ASSET_MUST_BE_WRAPPED_NATIVE");
+        require(approvedToken[asset], "ASSET_NOT_ALLOWED");
+        require(approvedToken[route.intermediateToken], "MID_NOT_ALLOWED");
+        require(asset != route.intermediateToken, "SAME_TOKEN");
+        require(approvedRouter[route.buyRouter] && approvedRouter[route.sellRouter], "ROUTER_NOT_ALLOWED");
+        require(amount > 0, "ZERO_AMOUNT");
+        require(route.minIntermediateOut > 0 && route.minFinalOut > 0, "ZERO_MIN_OUT");
+        require(route.gasReserveInAsset > 0, "ZERO_GAS_RESERVE");
+        require(route.minProfit > 0, "ZERO_MIN_PROFIT");
+        require(route.deadline >= block.timestamp && route.deadline <= block.timestamp + 120, "BAD_DEADLINE");
+
+        loanAsset = asset;
+        loanAmount = amount;
+        startingBalance = IERC20(asset).balanceOf(address(this));
+        active = true;
+        callbackSeen = false;
+
+        pool.flashLoanSimple(address(this), asset, amount, abi.encode(route), 0);
+
+        uint256 requiredResidual = startingBalance + route.gasReserveInAsset + route.minProfit;
+        require(IERC20(asset).balanceOf(address(this)) >= requiredResidual, "POST_REPAYMENT_PROFIT_CHECK");
+        require(IERC20(asset).allowance(address(this), address(pool)) == 0, "POOL_ALLOWANCE_NOT_CLEARED");
+        require(callbackSeen, "NO_CALLBACK");
+
+        active = false;
+        loanAsset = address(0);
+        loanAmount = 0;
+        startingBalance = 0;
+    }
+
+    function executeOperation(
+        address asset,
+        uint256 amount,
+        uint256 premium,
+        address initiator,
+        bytes calldata params
+    ) external returns (bool) {
+        require(msg.sender == address(pool), "ONLY_POOL");
+        require(initiator == address(this), "BAD_INITIATOR");
+        require(active && !callbackSeen, "UNEXPECTED_CALLBACK");
+        require(asset == loanAsset && asset == wrappedNative && amount == loanAmount, "LOAN_MISMATCH");
+        callbackSeen = true;
+
+        if (v4RouteActive) {
+            RouteV4 memory r = abi.decode(params, (RouteV4));
+            require(approvedToken[asset] && approvedToken[r.intermediateToken], "TOKEN_REVOKED");
+            require(approvedRouter[r.buyRouter] && approvedRouter[r.sellRouter], "ROUTER_REVOKED");
+            require(r.deadline >= block.timestamp && r.deadline <= block.timestamp + 120, "ROUTE_EXPIRED");
+            if (routerType[r.buyRouter] == 3) _validateV4Leg(r.buyRouter, r.buyFee, r.buyTickSpacing);
+            if (routerType[r.sellRouter] == 3) _validateV4Leg(r.sellRouter, r.sellFee, r.sellTickSpacing);
+            uint256 midOut = _swapAny(r.buyRouter, asset, r.intermediateToken, amount, r.minIntermediateOut, r.deadline, r.buyFee, r.buyTickSpacing);
+            _swapAny(r.sellRouter, r.intermediateToken, asset, midOut, r.minFinalOut, r.deadline, r.sellFee, r.sellTickSpacing);
+            _finalizeFlashLoan(asset, r.intermediateToken, amount, premium, r.gasReserveInAsset, r.minProfit);
+        } else {
+            Route memory r = abi.decode(params, (Route));
+            require(approvedToken[asset] && approvedToken[r.intermediateToken], "TOKEN_REVOKED");
+            require(approvedRouter[r.buyRouter] && approvedRouter[r.sellRouter], "ROUTER_REVOKED");
+            require(r.deadline >= block.timestamp && r.deadline <= block.timestamp + 120, "ROUTE_EXPIRED");
+            uint256 midOut = _swap(r.buyRouter, asset, r.intermediateToken, amount, r.minIntermediateOut, r.deadline, r.buyFee);
+            _swap(r.sellRouter, r.intermediateToken, asset, midOut, r.minFinalOut, r.deadline, r.sellFee);
+            _finalizeFlashLoan(asset, r.intermediateToken, amount, premium, r.gasReserveInAsset, r.minProfit);
+        }
+        return true;
+    }
+
+    function _finalizeFlashLoan(
+        address asset, address intermediate, uint256 amount, uint256 premium,
+        uint256 gasReserve, uint256 minProfit
+    ) internal {
+        uint256 owed = amount + premium;
+        uint256 requiredBalance = startingBalance + owed + gasReserve + minProfit;
+        uint256 finalBalance = IERC20(asset).balanceOf(address(this));
+        require(finalBalance >= requiredBalance, "NOT_PROFITABLE");
+        _safeApprove(asset, address(pool), owed);
+        emit ArbitrageCompleted(asset, intermediate, amount, premium, finalBalance - startingBalance - owed);
+    }
+
+    function _validateV4Leg(address manager, uint24 fee, int24 tickSpacing) internal view {
+        require(manager == address(poolManager) && routerType[manager] == 3, "BAD_V4_MANAGER");
+        require(
+            (fee == 500 && tickSpacing == 10) ||
+            (fee == 3000 && tickSpacing == 60) ||
+            (fee == 10000 && tickSpacing == 200),
+            "UNSUPPORTED_V4_POOL_KEY"
+        );
+    }
+
+    function _swapAny(
+        address router, address tokenIn, address tokenOut, uint256 amountIn,
+        uint256 minOut, uint256 deadline, uint24 fee, int24 tickSpacing
+    ) internal returns (uint256) {
+        if (routerType[router] == 3) {
+            return _swapV4(tokenIn, tokenOut, amountIn, minOut, fee, tickSpacing);
+        }
+        return _swap(router, tokenIn, tokenOut, amountIn, minOut, deadline, fee);
+    }
+
+    function _swapV4(
+        address tokenIn, address tokenOut, uint256 amountIn,
+        uint256 minOut, uint24 fee, int24 tickSpacing
+    ) internal returns (uint256 amountOut) {
+        require(tokenIn != tokenOut && amountIn > 0 && amountIn <= uint256(uint128(type(int128).max)), "BAD_V4_SWAP");
+        _validateV4Leg(address(poolManager), fee, tickSpacing);
+        uint256 beforeIn = IERC20(tokenIn).balanceOf(address(this));
+        uint256 beforeOut = IERC20(tokenOut).balanceOf(address(this));
+        v4UnlockActive = true;
+        v4CallbackSeen = false;
+        bytes memory result = poolManager.unlock(abi.encode(V4SwapData(tokenIn, tokenOut, amountIn, minOut, fee, tickSpacing)));
+        require(v4CallbackSeen, "V4_CALLBACK_MISSING");
+        v4UnlockActive = false;
+        amountOut = abi.decode(result, (uint256));
+        uint256 afterIn = IERC20(tokenIn).balanceOf(address(this));
+        uint256 afterOut = IERC20(tokenOut).balanceOf(address(this));
+        require(beforeIn >= afterIn && beforeIn - afterIn == amountIn, "V4_INPUT_DELTA_MISMATCH");
+        require(afterOut >= beforeOut && afterOut - beforeOut == amountOut && amountOut >= minOut, "V4_OUTPUT_DELTA_MISMATCH");
+    }
+
     function unlockCallback(bytes calldata data) external returns (bytes memory) {
         require(msg.sender == address(poolManager), "ONLY_V4_POOL_MANAGER");
         require(active && v4RouteActive && v4UnlockActive && !v4CallbackSeen, "UNEXPECTED_V4_CALLBACK");
