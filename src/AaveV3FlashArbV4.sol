@@ -345,7 +345,7 @@ contract AaveV3FlashArbV4 is IUnlockCallback {
         address tokenIn, address tokenOut, uint256 amountIn,
         uint256 minOut, uint24 fee, int24 tickSpacing
     ) internal returns (uint256 amountOut) {
-        require(tokenIn != tokenOut && amountIn > 0 && amountIn <= uint256(type(int128).max), "BAD_V4_SWAP");
+        require(tokenIn != tokenOut && amountIn > 0 && amountIn <= uint256(uint128(type(int128).max)), "BAD_V4_SWAP");
         _validateV4Leg(address(poolManager), fee, tickSpacing);
         uint256 beforeIn = IERC20(tokenIn).balanceOf(address(this));
         uint256 beforeOut = IERC20(tokenOut).balanceOf(address(this));
