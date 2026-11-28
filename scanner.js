@@ -55,16 +55,17 @@ async function estimateCandidateL1Fee(candidate, amountIn, midOut, baseOut, bloc
   const minMid = midOut * (10000n - SCANNER_SLIPPAGE_BPS) / 10000n;
   const minBase = baseOut * (10000n - SCANNER_SLIPPAGE_BPS) / 10000n;
   const deadline = BigInt(Math.floor(Date.now() / 1000) + 45);
+  const conservativeCalldataWord = (1n << 256n) - 1n;
   const hasV3 = candidate.buy.type === "v3" || candidate.sell.type === "v3";
   const data = hasV3
     ? EXECUTOR_CALL_IFACE.encodeFunctionData("startV3", [
         cfg.tokens.WETH.address, amountIn,
         [candidate.midToken.address, candidate.buy.router, candidate.sell.router, minMid, minBase,
-          Number(candidate.buyFee ?? 0), Number(candidate.sellFee ?? 0), 1n, 1n, deadline]
+          Number(candidate.buyFee ?? 0), Number(candidate.sellFee ?? 0), conservativeCalldataWord, conservativeCalldataWord, deadline]
       ])
     : EXECUTOR_CALL_IFACE.encodeFunctionData("start", [
         cfg.tokens.WETH.address, amountIn,
-        [candidate.midToken.address, candidate.buy.router, candidate.sell.router, minMid, minBase, 1n, 1n, deadline]
+        [candidate.midToken.address, candidate.buy.router, candidate.sell.router, minMid, minBase, conservativeCalldataWord, conservativeCalldataWord, deadline]
       ]);
   const call = L1_FEE_IFACE.encodeFunctionData("getL1Fee", [data]);
   const raw = await provider.call({ to: L1_FEE_ORACLE, data: call }, blockTag);
@@ -298,11 +299,17 @@ async function main() {
   const wethForProbe = cfg.tokens.WETH;
   const factoryCache = new Map();
   async function hasConfiguredPool(venue, token) {
-    if (venue.type === "v4") return true; // Quoter is the authoritative no-hook pool check for V4.
-    const fees = feeOptions(venue);
-    for (const fee of fees) {
+    let anyExists = false;
+    for (const fee of feeOptions(venue)) {
       const key = [venue.name, token.address.toLowerCase(), String(fee)].join(":");
-      if (routeableVenueKeys.has(key)) return true;
+      if (routeableVenueKeys.has(key)) { anyExists = true; continue; }
+      // V4 has no factory probe in this scanner; its Quoter performs the
+      // authoritative no-hook/pool/liquidity validation during route quoting.
+      if (venue.type === "v4") {
+        routeableVenueKeys.add(key);
+        anyExists = true;
+        continue;
+      }
       let exists = false;
       try {
         let factory = factoryCache.get(venue.factory);
@@ -325,10 +332,10 @@ async function main() {
       if (exists) {
         routeableVenueKeys.add(key);
         poolProbeStats.poolsFound++;
-        return true;
+        anyExists = true;
       }
     }
-    return false;
+    return anyExists;
   }
   for (const [midName, midToken] of tokenEntries) {
     if (midName === "WETH" || midToken.address.toLowerCase() === wethForProbe.address.toLowerCase()) continue;
