@@ -151,7 +151,7 @@ function classifyQuoteError(error) {
 const quoteCache = new Map();
 function cachedQuote(venue, tokenIn, tokenOut, amountIn, fee, blockTag) {
   const key = [venue.name, tokenIn.address.toLowerCase(), tokenOut.address.toLowerCase(),
-    amountIn.toString(), fee, blockTag].join(":");
+    amountIn.toString(), fee && typeof fee === "object" ? JSON.stringify(fee) : fee, blockTag].join(":");
   if (!quoteCache.has(key)) quoteCache.set(key, quote(venue, tokenIn, tokenOut, amountIn, fee, blockTag));
   return quoteCache.get(key);
 }
