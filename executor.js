@@ -116,19 +116,29 @@ async function main() {
   if (output.chainId !== 8453 || !Array.isArray(output.candidates)) {
     throw new Error("Opportunity file has the wrong chain or invalid candidate list");
   }
-  const v3Config = cfg.venues.find(v => v.type === "v3");
-  const v3ExecutionReady = v3Config
-    ? Number(await executor.routerType(v3Config.router).catch(() => 0n)) === 2
-    : false;
   const venueByName = new Map(cfg.venues.map(v => [v.name, v]));
-  const compatible = output.candidates.filter(x => {
+  // Check each candidate against the exact deployed router registrations.
+  // This supports V2/V2, V2/V3, V3/V2 and V3/V3 routes without assuming
+  // that one globally selected V3 router represents every V3 leg.
+  const compatible = (await Promise.all(output.candidates.map(async x => {
     const buyVenue = venueByName.get(x.buyVenue);
     const sellVenue = venueByName.get(x.sellVenue);
-    const requiresV3 = buyVenue?.type === "v3" || sellVenue?.type === "v3";
-    return x.base === "WETH" && x.executorCompatible === true && x.buyRouter && x.sellRouter && x.intermediate &&
-      (!requiresV3 || v3ExecutionReady) &&
-      /^\d+$/.test(String(x.estimatedNetProfitRaw ?? ""));
-  });
+    if (x.base !== "WETH" || x.executorCompatible !== true ||
+        !x.buyRouter || !x.sellRouter || !x.intermediate ||
+        !/^\d+$/.test(String(x.estimatedNetProfitRaw ?? "")) ||
+        !buyVenue?.router || !sellVenue?.router ||
+        buyVenue.router.toLowerCase() !== String(x.buyRouter).toLowerCase() ||
+        sellVenue.router.toLowerCase() !== String(x.sellRouter).toLowerCase()) {
+      return false;
+    }
+    for (const venue of [buyVenue, sellVenue]) {
+      const expectedType = venue.type === "v2" ? 1 : venue.type === "v3" ? 2 : 0;
+      if (!expectedType || Number(await executor.routerType(venue.router).catch(() => 0n)) !== expectedType) {
+        return false;
+      }
+    }
+    return true;
+  }))).filter(Boolean);
   compatible.sort((a, b) => {
     const av = BigInt(a.estimatedNetProfitRaw);
     const bv = BigInt(b.estimatedNetProfitRaw);
@@ -136,7 +146,7 @@ async function main() {
   });
   const c = compatible[0];
   if (!c) {
-    console.log("No V2/V2 WETH candidate passed scanner filters; clean no-trade cycle.");
+    console.log("No V2/V3 WETH candidate passed scanner filters and deployed router-approval checks; clean no-trade cycle.");
     return;
   }
 
