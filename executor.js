@@ -1,6 +1,7 @@
 import "dotenv/config";
 import fs from "node:fs";
 import { ethers } from "ethers";
+import { verifyNewTokenSecurity } from "./token-security.js";
 
 const cfg = JSON.parse(fs.readFileSync(new URL("./config.json", import.meta.url), "utf8"));
 for (const key of ["RPC_URL", "EXECUTOR_ADDRESS", "EXECUTOR_CODE_HASH", "WALLET_PRIVATE_KEY"]) {
@@ -27,6 +28,7 @@ const executor = new ethers.Contract(ethers.getAddress(process.env.EXECUTOR_ADDR
   "function routerFactory(address) view returns (address)",
   "function routerType(address) view returns (uint8)",
   "function approvedToken(address) view returns (bool)",
+  "function setToken(address token,bool approved)",
   "function approvedRouter(address) view returns (bool)",
   "event ArbitrageCompleted(address indexed asset,address indexed intermediateToken,uint256 principal,uint256 premium,uint256 grossProfit)",
   "function start(address asset,uint256 amount,(address intermediateToken,address buyRouter,address sellRouter,uint256 minIntermediateOut,uint256 minFinalOut,uint256 gasReserveInAsset,uint256 minProfit,uint256 deadline) route)",
@@ -135,6 +137,11 @@ async function main() {
 
   const v4ExecutionEnabled = process.env.EXECUTOR_V4_ENABLED === "true";
   const output = JSON.parse(fs.readFileSync(new URL("./opportunities.json", import.meta.url), "utf8"));
+  let watchlist = { tokens: [] };
+  try { watchlist = JSON.parse(fs.readFileSync(new URL("./new-token-watchlist.json", import.meta.url), "utf8")); } catch {}
+  const discoveredByAddress = new Map((watchlist.tokens ?? [])
+    .filter(t => ethers.isAddress(t.address))
+    .map(t => [t.address.toLowerCase(), t]));
   if (output.chainId !== 8453 || !Array.isArray(output.candidates)) {
     throw new Error("Opportunity file has the wrong chain or invalid candidate list");
   }
@@ -156,13 +163,20 @@ async function main() {
     }
     const intermediateAddress = x.intermediateAddress ?? cfg.tokens[x.intermediate]?.address;
     if (!intermediateAddress || !ethers.isAddress(intermediateAddress)) return false;
+    const tokenAddress = ethers.getAddress(intermediateAddress);
     const [baseAllowed, tokenAllowed, buyAllowed, sellAllowed] = await Promise.all([
       executor.approvedToken(cfg.tokens.WETH.address).catch(() => false),
-      executor.approvedToken(ethers.getAddress(intermediateAddress)).catch(() => false),
+      executor.approvedToken(tokenAddress).catch(() => false),
       executor.approvedRouter(buyVenue.router).catch(() => false),
       executor.approvedRouter(sellVenue.router).catch(() => false)
     ]);
-    if (!baseAllowed || !tokenAllowed || !buyAllowed || !sellAllowed) return false;
+    const discovered = discoveredByAddress.get(tokenAddress.toLowerCase());
+    const securityFresh = discovered?.securityPassed === true &&
+      discovered?.security?.passed === true &&
+      discovered?.security?.chainId === 8453 &&
+      Number.isFinite(Date.parse(discovered.security.checkedAt)) &&
+      Date.now() - Date.parse(discovered.security.checkedAt) <= 10 * 60 * 1000;
+    if (!baseAllowed || (!tokenAllowed && !securityFresh) || !buyAllowed || !sellAllowed) return false;
     for (const venue of [buyVenue, sellVenue]) {
       const expectedType = venue.type === "v2" ? 1 : venue.type === "v3" ? 2 : venue.type === "v4" ? 3 : 0;
       if (!expectedType || Number(await executor.routerType(venue.router).catch(() => 0n)) !== expectedType) {
@@ -195,13 +209,15 @@ async function main() {
 
   const base = cfg.tokens.WETH;
   let mid = cfg.tokens[c.intermediate];
+  let discoveredToken = null;
   if (!mid && c.intermediateAddress && Number.isInteger(c.intermediateDecimals)) {
-    let discovered = [];
-    try { discovered = JSON.parse(fs.readFileSync(new URL("./new-token-watchlist.json", import.meta.url), "utf8")).tokens ?? []; } catch {}
-    const match = discovered.find(t => t.symbol === c.intermediate &&
+    const match = (watchlist.tokens ?? []).find(t => t.symbol === c.intermediate &&
       ethers.isAddress(t.address) && t.address.toLowerCase() === String(c.intermediateAddress).toLowerCase() &&
       Number(t.decimals) === c.intermediateDecimals);
-    if (match) mid = { address: match.address, decimals: match.decimals, discoveryOnly: true };
+    if (match) {
+      discoveredToken = match;
+      mid = { address: match.address, decimals: match.decimals, discoveryOnly: false };
+    }
   }
   if (!mid) throw new Error("Unknown or unverified intermediate token; refusing execution");
   if (c.intermediateAddress && mid.address.toLowerCase() !== c.intermediateAddress.toLowerCase()) {
@@ -223,8 +239,16 @@ async function main() {
     executor.routerFactory(buy),
     executor.routerFactory(sell)
   ]);
-  if (!assetAllowed || !intermediateAllowed || !buyAllowed || !sellAllowed) {
-    throw new Error("On-chain token/router allowlist does not authorize this exact route");
+  if (!assetAllowed || !buyAllowed || !sellAllowed) {
+    throw new Error("On-chain WETH/router allowlist does not authorize this exact route");
+  }
+  const needsDiscoveredTokenApproval = !intermediateAllowed;
+  if (needsDiscoveredTokenApproval && (!discoveredToken ||
+      discoveredToken.securityPassed !== true || discoveredToken.security?.passed !== true ||
+      discoveredToken.security?.chainId !== 8453 ||
+      !Number.isFinite(Date.parse(discoveredToken.security.checkedAt)) ||
+      Date.now() - Date.parse(discoveredToken.security.checkedAt) > 10 * 60 * 1000)) {
+    throw new Error("Unapproved token is not a freshly security-cleared discovery candidate");
   }
   const selectedVenues = [
     { addr: buy, venue: cfg.venues.find(v => v.router?.toLowerCase() === buy.toLowerCase()), boundFactory: buyFactoryOnchain, legFee: c.buyFee },
