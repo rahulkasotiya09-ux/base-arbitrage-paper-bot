@@ -316,12 +316,15 @@ async function main() {
     .slice(0, 4);
   const tripleVenues = scanVenues.filter(v => ["v2", "v3", "aerodrome"].includes(v.type));
   const tripleTasks = [];
+  const tripleReserveBalance = await new ethers.Contract(
+    cfg.tokens.WETH.address, AAVE_RESERVE_ABI, provider
+  ).balanceOf(poolAddress, { blockTag: block });
   for (const [firstName, firstToken] of tripleTokens) {
     for (const [secondName, secondToken] of tripleTokens) {
       if (firstName === secondName || firstToken.address.toLowerCase() === secondToken.address.toLowerCase()) continue;
       for (const amountText of ["0.001", "0.01"]) {
         const amountIn = parse(amountText, cfg.tokens.WETH.decimals);
-        if (amountIn > reserveBalance) continue;
+        if (amountIn > tripleReserveBalance) continue;
         for (const firstVenue of tripleVenues)
           for (const secondVenue of tripleVenues)
             for (const thirdVenue of tripleVenues) {
