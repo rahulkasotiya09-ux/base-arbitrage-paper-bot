@@ -30,11 +30,11 @@ jobs:
       - name: Install dependencies
         run: npm install --omit=dev --no-audit --no-fund
 
-      - name: Discover newly launched Base tokens (watchlist only)
+      - name: Discover Base tokens and require strict GoPlus security clearance
         run: node new-token-discovery.js
 
       - name: Check JavaScript syntax
-        run: node --check scanner.js && node --check executor.js && node --check bot.js
+        run: node --check token-security.js && node --check new-token-discovery.js && node --check scanner.js && node --check executor.js && node --check bot.js
 
       - name: Scan and guarded live execution
         env:
@@ -44,6 +44,7 @@ jobs:
           WALLET_PRIVATE_KEY: ${{ secrets.WALLET_PRIVATE_KEY }}
           LIVE_TRADING: "true"
           CONFIRM_LIVE_TRADING: "I_ACCEPT_TRANSACTION_RISK"
+          AUTO_APPROVE_DISCOVERED_TOKENS: "true"
           SCAN_INTERVAL_MS: "300000"
           RUN_ONCE: "true"
           SLIPPAGE_BPS: "30"
