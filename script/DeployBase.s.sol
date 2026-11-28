@@ -16,9 +16,11 @@ contract DeployBase is Script {
     address internal constant WSTETH = 0xc1CBa3fCea344f92D9239c08C0568f6F2F0ee452;
     address internal constant GHO = 0x6Bb7a212910682DCFdbd5BCBb3e28FB4E8da10Ee;
 
-    // Only V2 routers are supported by AaveV3FlashArb's swap interface.
+    // V2 and V3 routers are supported by the upgraded executor.
     address internal constant UNISWAP_V2_ROUTER = 0x4752ba5DBc23f44D87826276BF6Fd6b1C372aD24;
     address internal constant BASESWAP_V2_ROUTER = 0x327Df1E6de05895d2ab08513aaDD9313Fe505d86;
+    address internal constant UNISWAP_V3_ROUTER = 0x2626664c2603336E57B271c5C0b26F421741e481;
+    address internal constant UNISWAP_V3_FACTORY = 0x33128a8fC17869897dcE68Ed026d694621f6FDfD;
 
     event ExecutorDeployed(address indexed executor, address indexed owner, bytes32 runtimeCodeHash);
 
@@ -62,6 +64,7 @@ contract DeployBase is Script {
 
         executor.setRouter(UNISWAP_V2_ROUTER, true);
         executor.setRouter(BASESWAP_V2_ROUTER, true);
+        executor.setV3Router(UNISWAP_V3_ROUTER, UNISWAP_V3_FACTORY, true);
         vm.stopBroadcast();
 
         require(address(executor).code.length > 0, "DEPLOYED_CODE_MISSING");
