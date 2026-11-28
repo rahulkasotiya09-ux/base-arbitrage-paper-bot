@@ -43,28 +43,43 @@ const allTokens = { ...cfg.tokens, ...discoveredTokens };
 const tokenEntries = Object.entries(allTokens);
 const parse = (n, d) => ethers.parseUnits(String(n), d);
 
+const quoteFailureKinds = Object.create(null);
+const quoteVenueStats = Object.fromEntries(cfg.venues.map(venue => [venue.name, {
+  calls: 0, successes: 0, failures: 0, failureKinds: {}
+}]));
+
 async function quote(venue, tokenIn, tokenOut, amountIn, fee, blockTag) {
+  const venueStats = quoteVenueStats[venue.name];
+  venueStats.calls++;
   try {
+    let result;
     if (venue.type === "v2") {
       const amounts = await v2.get(venue.name).getAmountsOut(amountIn, [tokenIn.address, tokenOut.address], { blockTag });
-      return amounts[1];
+      result = amounts[1];
+    } else {
+      const q = await v3.get(venue.name).quoteExactInputSingle.staticCall({
+        tokenIn: tokenIn.address, tokenOut: tokenOut.address,
+        amountIn, fee, sqrtPriceLimitX96: 0
+      }, { blockTag });
+      result = q.amountOut ?? q[0];
     }
-    const q = await v3.get(venue.name).quoteExactInputSingle.staticCall({
-      tokenIn: tokenIn.address, tokenOut: tokenOut.address,
-      amountIn, fee, sqrtPriceLimitX96: 0
-    }, { blockTag });
-    return q.amountOut ?? q[0];
+    venueStats.successes++;
+    return result;
   } catch (error) {
     const kind = classifyQuoteError(error);
     quoteFailureKinds[kind] = (quoteFailureKinds[kind] ?? 0) + 1;
+    venueStats.failures++;
+    venueStats.failureKinds[kind] = (venueStats.failureKinds[kind] ?? 0) + 1;
     return null;
   }
 }
 
-const quoteFailureKinds = Object.create(null);
 function classifyQuoteError(error) {
-  const message = String(error?.shortMessage ?? error?.reason ?? error?.message ?? error).toLowerCase();
-  if (/429|rate.?limit|too many requests/.test(message)) return "rpc_rate_limited";
+  const message = [
+    error?.shortMessage, error?.reason, error?.message,
+    error?.info?.error?.message, error?.cause?.message, error
+  ].filter(Boolean).join(" ").toLowerCase();
+  if (/429|rate.?limit|too many requests|25\/second|request limit/.test(message)) return "rpc_rate_limited";
   if (/timeout|timed out|etimedout|econnreset|network_error|server_error|502|503|504/.test(message)) return "rpc_transient";
   if (/insufficient liquidity|insufficient_output|pool does not exist|call_exception|execution reverted|missing revert data/.test(message)) return "no_pool_or_liquidity";
   return "other_quote_error";
@@ -220,7 +235,7 @@ async function main() {
     flashLoanPremiumBps: premiumBps.toString(),
     gasPriceWei: (feeData.maxFeePerGas ?? feeData.gasPrice ?? 0n).toString(),
     gasLimitEstimate: cfg.gasLimitEstimate,
-    stats: { ...stats, quoteFailureKinds },
+    stats: { ...stats, quoteFailureKinds, quoteVenueStats },
     candidates: rows
   };
   fs.writeFileSync("opportunities.json", JSON.stringify(output, null, 2));
@@ -233,7 +248,7 @@ async function main() {
   console.log(`Scanned block ${block}. ${rows.length} preliminary candidate(s) written to opportunities.json`);
   if (rows.some(r => !r.executionReady)) console.log("V2 and V3 routes are quoted; executor independently validates the router type, factory/pool and exact simulation.");
   for (const r of rows.slice(0, 20)) console.log(`${r.base} ${r.amountIn} | ${r.buyVenue} -> ${r.sellVenue} | net=${r.estimatedNetProfit}`);
-  console.log("Scan diagnostics:", JSON.stringify({ ...stats, quoteFailureKinds }));
+  console.log("Scan diagnostics:", JSON.stringify({ ...stats, quoteFailureKinds, quoteVenueStats }));
   if (!rows.length) console.log("No candidates had positive indicative profit after Aave premium and estimated L2 gas. Final L1 fee and safety buffer are checked by executor.");
 }
 main().catch(e => { console.error(e); process.exitCode = 1; });
