@@ -27,7 +27,7 @@ const discoveredPath = new URL("./new-token-watchlist.json", import.meta.url);
 let discoveredTokens = {};
 try {
   const watchlist = JSON.parse(fs.readFileSync(discoveredPath, "utf8"));
-  for (const token of (watchlist.tokens ?? []).slice().sort((a, b) => Number(b.liquidityUsd ?? 0) - Number(a.liquidityUsd ?? 0)).slice(0, 20)) {
+  for (const token of (watchlist.tokens ?? []).slice().sort((a, b) => Number(b.liquidityUsd ?? 0) - Number(a.liquidityUsd ?? 0)).slice(0, 50)) {
     if (token?.safetyPassed === true && token?.safetyProvider === "GoPlus Token Security API" &&
         token?.symbol && token?.address && Number.isInteger(token.decimals) &&
         !Object.prototype.hasOwnProperty.call(cfg.tokens, token.symbol)) {
