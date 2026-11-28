@@ -249,10 +249,10 @@ contract AaveV3FlashArbV4 is IUnlockCallback {
     }
 
     function setAerodromeRouter(address router, address factory, bool approved) external onlyOwner whenIdle {
-        require(router != address(0) && router.code.length > 0, "BAD_AERODROME_ROUTER");
+        require(router != address(0) && router.code.length > 0, "A1");
         if (approved) {
-            require(factory != address(0) && factory.code.length > 0, "BAD_AERODROME_FACTORY");
-            require(IAerodromeRouter(router).defaultFactory() == factory, "AERODROME_FACTORY_MISMATCH");
+            require(factory != address(0) && factory.code.length > 0, "A2");
+            require(IAerodromeRouter(router).defaultFactory() == factory, "A3");
             routerFactory[router] = factory;
             routerType[router] = 4;
         } else {
@@ -264,10 +264,10 @@ contract AaveV3FlashArbV4 is IUnlockCallback {
     }
 
     function setSlipstreamRouter(address router, address factory, bool approved) external onlyOwner whenIdle {
-        require(router != address(0) && router.code.length > 0, "BAD_SLIPSTREAM_ROUTER");
+        require(router != address(0) && router.code.length > 0, "S1");
         if (approved) {
-            require(factory != address(0) && factory.code.length > 0, "BAD_SLIPSTREAM_FACTORY");
-            require(ISlipstreamRouter(router).factory() == factory, "SLIPSTREAM_FACTORY_MISMATCH");
+            require(factory != address(0) && factory.code.length > 0, "S2");
+            require(ISlipstreamRouter(router).factory() == factory, "S3");
             routerFactory[router] = factory;
             routerType[router] = 5;
         } else {
@@ -284,8 +284,8 @@ contract AaveV3FlashArbV4 is IUnlockCallback {
         _validateMultiLeg(route.sellRouter, asset, route.intermediateToken, route.sellFee, route.sellTickSpacing, route.sellStable);
         require(asset == wrappedNative && approvedToken[asset], "ASSET_NOT_ALLOWED");
         require(approvedToken[route.intermediateToken] && route.intermediateToken != asset, "MID_NOT_ALLOWED");
-        require(amount > 0 && route.minIntermediateOut > 0 && route.minFinalOut > 0, "BAD_AMOUNT_OR_MIN_OUT");
-        require(route.gasReserveInAsset > 0 && route.minProfit > 0, "BAD_PROFIT_GUARD");
+        require(amount > 0 && route.minIntermediateOut > 0 && route.minFinalOut > 0, "M1");
+        require(route.gasReserveInAsset > 0 && route.minProfit > 0, "M2");
         require(route.deadline >= block.timestamp && route.deadline <= block.timestamp + 120, "BAD_DEADLINE");
         require(approvedRouter[route.buyRouter] && approvedRouter[route.sellRouter], "ROUTER_NOT_ALLOWED");
         loanAsset = asset;
@@ -333,8 +333,8 @@ contract AaveV3FlashArbV4 is IUnlockCallback {
     function startV4(address asset, uint256 amount, RouteV4 calldata route) external onlyOwner whenIdle {
         require(asset == wrappedNative && approvedToken[asset], "ASSET_NOT_ALLOWED");
         require(approvedToken[route.intermediateToken] && route.intermediateToken != asset, "MID_NOT_ALLOWED");
-        require(amount > 0 && route.minIntermediateOut > 0 && route.minFinalOut > 0, "BAD_AMOUNT_OR_MIN_OUT");
-        require(route.gasReserveInAsset > 0 && route.minProfit > 0, "BAD_PROFIT_GUARD");
+        require(amount > 0 && route.minIntermediateOut > 0 && route.minFinalOut > 0, "M1");
+        require(route.gasReserveInAsset > 0 && route.minProfit > 0, "M2");
         require(route.deadline >= block.timestamp && route.deadline <= block.timestamp + 120, "BAD_DEADLINE");
         if (routerType[route.buyRouter] == 3) _validateV4Leg(route.buyRouter, route.buyFee, route.buyTickSpacing);
         if (routerType[route.sellRouter] == 3) _validateV4Leg(route.sellRouter, route.sellFee, route.sellTickSpacing);
@@ -472,19 +472,19 @@ contract AaveV3FlashArbV4 is IUnlockCallback {
             _validateV4Leg(router, fee, tickSpacing);
         } else if (kind == 4) {
             address factory = routerFactory[router];
-            require(factory != address(0) && factory.code.length > 0, "AERODROME_FACTORY_MISSING");
+            require(factory != address(0) && factory.code.length > 0, "A4");
             address poolAddress = IAerodromeFactory(factory).getPool(tokenIn, tokenOut, stable);
-            require(poolAddress != address(0) && poolAddress.code.length > 0, "AERODROME_POOL_MISSING");
+            require(poolAddress != address(0) && poolAddress.code.length > 0, "A5");
         } else if (kind == 5) {
             require(
                 tickSpacing == 1 || tickSpacing == 50 || tickSpacing == 100 ||
                 tickSpacing == 200 || tickSpacing == 2000,
-                "UNSUPPORTED_SLIPSTREAM_TICK_SPACING"
+                "S4"
             );
             address factory = routerFactory[router];
-            require(factory != address(0) && factory.code.length > 0, "SLIPSTREAM_FACTORY_MISSING");
+            require(factory != address(0) && factory.code.length > 0, "S5");
             address poolAddress = ISlipstreamFactory(factory).getPool(tokenIn, tokenOut, tickSpacing);
-            require(poolAddress != address(0) && poolAddress.code.length > 0, "SLIPSTREAM_POOL_MISSING");
+            require(poolAddress != address(0) && poolAddress.code.length > 0, "S6");
         } else {
             revert("UNKNOWN_ROUTER_TYPE");
         }
@@ -507,8 +507,8 @@ contract AaveV3FlashArbV4 is IUnlockCallback {
     {
         address factory = routerFactory[router];
         require(approvedRouter[router] && factory != address(0) &&
-            IAerodromeRouter(router).defaultFactory() == factory, "AERODROME_ROUTER_FACTORY_MISMATCH");
-        require(IAerodromeFactory(factory).getPool(p.tokenIn, p.tokenOut, stable) != address(0), "AERODROME_POOL_MISSING");
+            IAerodromeRouter(router).defaultFactory() == factory, "A6");
+        require(IAerodromeFactory(factory).getPool(p.tokenIn, p.tokenOut, stable) != address(0), "A5");
         uint256 beforeIn = IERC20(p.tokenIn).balanceOf(address(this));
         uint256 beforeOut = IERC20(p.tokenOut).balanceOf(address(this));
         _safeApprove(p.tokenIn, router, p.amountIn);
@@ -517,13 +517,13 @@ contract AaveV3FlashArbV4 is IUnlockCallback {
         uint256[] memory amounts = IAerodromeRouter(router).swapExactTokensForTokens(
             p.amountIn, p.minOut, routes, address(this), p.deadline
         );
-        require(amounts.length == 2 && amounts[1] >= p.minOut, "BAD_AERODROME_SWAP_RESULT");
+        require(amounts.length == 2 && amounts[1] >= p.minOut, "A7");
         uint256 afterIn = IERC20(p.tokenIn).balanceOf(address(this));
         uint256 afterOut = IERC20(p.tokenOut).balanceOf(address(this));
-        require(beforeIn >= afterIn && beforeIn - afterIn == p.amountIn, "AERODROME_INPUT_DELTA");
-        require(afterOut >= beforeOut, "AERODROME_OUTPUT_DELTA");
+        require(beforeIn >= afterIn && beforeIn - afterIn == p.amountIn, "A8");
+        require(afterOut >= beforeOut, "A9");
         actualAmountOut = afterOut - beforeOut;
-        require(actualAmountOut >= p.minOut, "AERODROME_MIN_OUT");
+        require(actualAmountOut >= p.minOut, "AA");
         _safeApprove(p.tokenIn, router, 0);
     }
 
@@ -532,8 +532,8 @@ contract AaveV3FlashArbV4 is IUnlockCallback {
     {
         address factory = routerFactory[router];
         require(approvedRouter[router] && factory != address(0) &&
-            ISlipstreamRouter(router).factory() == factory, "SLIPSTREAM_ROUTER_FACTORY_MISMATCH");
-        require(ISlipstreamFactory(factory).getPool(p.tokenIn, p.tokenOut, tickSpacing) != address(0), "SLIPSTREAM_POOL_MISSING");
+            ISlipstreamRouter(router).factory() == factory, "S7");
+        require(ISlipstreamFactory(factory).getPool(p.tokenIn, p.tokenOut, tickSpacing) != address(0), "S6");
         uint256 beforeIn = IERC20(p.tokenIn).balanceOf(address(this));
         uint256 beforeOut = IERC20(p.tokenOut).balanceOf(address(this));
         _safeApprove(p.tokenIn, router, p.amountIn);
@@ -546,10 +546,10 @@ contract AaveV3FlashArbV4 is IUnlockCallback {
         );
         uint256 afterIn = IERC20(p.tokenIn).balanceOf(address(this));
         uint256 afterOut = IERC20(p.tokenOut).balanceOf(address(this));
-        require(beforeIn >= afterIn && beforeIn - afterIn == p.amountIn, "SLIPSTREAM_INPUT_DELTA");
-        require(afterOut >= beforeOut, "SLIPSTREAM_OUTPUT_DELTA");
+        require(beforeIn >= afterIn && beforeIn - afterIn == p.amountIn, "S8");
+        require(afterOut >= beforeOut, "S9");
         actualAmountOut = afterOut - beforeOut;
-        require(reportedOut == actualAmountOut && actualAmountOut >= p.minOut, "SLIPSTREAM_OUTPUT_MISMATCH");
+        require(reportedOut == actualAmountOut && actualAmountOut >= p.minOut, "SA");
         _safeApprove(p.tokenIn, router, 0);
     }
 
