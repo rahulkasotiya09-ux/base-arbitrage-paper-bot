@@ -267,8 +267,8 @@ async function main() {
         scannerGasUnits: scannerGasUnits.toString(),
         quoteBlock: block,
         l1DataFeeIncluded: false,
-        executionReady: true,
-        note: buy.type === "aerodrome" || sell.type === "aerodrome" ? "Aerodrome quote is discovery-only: the currently deployed executor does not implement Aerodrome route structs. Do not execute until a compatible contract is deployed and router/token approvals are verified." : "Preliminary filter only. Executor still requires on-chain token/router approvals, fresh quotes, full gas accounting, and exact transaction simulation."
+        executionStatus: buy.type === "aerodrome" || sell.type === "aerodrome" ? "discovery_only" : "requires_executor_validation",
+        note: buy.type === "aerodrome" || sell.type === "aerodrome" ? "Aerodrome quote is discovery-only: the currently deployed executor does not implement Aerodrome route structs. Do not execute until a compatible contract is deployed and router/token approvals are verified." : "Executor-compatible route only; not execution-ready until on-chain token/router approvals, fresh quotes, full gas accounting, and exact transaction simulation all pass."
       });
     }
   });
@@ -293,7 +293,9 @@ async function main() {
     await notifyTelegram(`FlashArb scanner: ${rows.length} candidate(s) at block ${block}\n\n${top}\n\nQuotes are indicative only. NOT EXECUTABLE / NOT GUARANTEED.`);
   }
   console.log(`Scanned block ${block}. ${rows.length} preliminary candidate(s) written to opportunities.json`);
-  if (rows.some(r => !r.executionReady)) console.log("V2 and V3 routes are quoted; executor independently validates the router type, factory/pool and exact simulation.");
+  const executorCompatibleCount = rows.filter(r => r.executorCompatible).length;
+  const discoveryOnlyCount = rows.length - executorCompatibleCount;
+  console.log(`Candidate status: ${executorCompatibleCount} executor-compatible pending validation; ${discoveryOnlyCount} discovery-only (Aerodrome unsupported by current executor).`);
   for (const r of rows.slice(0, 20)) console.log(`${r.base} ${r.amountIn} | ${r.buyVenue} -> ${r.sellVenue} | net=${r.estimatedNetProfit}`);
   console.log("Scan diagnostics:", JSON.stringify({ ...stats, quoteFailureKinds, quoteVenueStats, quoteRetryStats, quoteRpcEndpoints: quoteProviders.length }));
   if (!rows.length) console.log("No candidates had positive indicative profit after Aave premium and estimated L2 gas. Final L1 fee and safety buffer are checked by executor.");
