@@ -5,6 +5,7 @@ on:
     branches: [dev/flashloan-bot-build]
     paths:
       - "src/**"
+      - "script/**"
       - "scanner.js"
       - "executor.js"
       - "token-security.js"
@@ -14,6 +15,7 @@ on:
   pull_request:
     paths:
       - "src/**"
+      - "script/**"
       - "scanner.js"
       - "executor.js"
       - "config.json"
@@ -34,4 +36,4 @@ jobs:
         run: node --check token-security.js && node --check new-token-discovery.js && node --check scanner.js && node --check executor.js && node --check bot.js
       - uses: foundry-rs/foundry-toolchain@v1
       - name: Compile all Solidity contracts
-        run: forge build --sizes --skip test --skip script
+        run: forge build --sizes --skip test
