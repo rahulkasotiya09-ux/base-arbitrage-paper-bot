@@ -1,0 +1,35 @@
+name: V4 Executor Static Checks
+
+on:
+  push:
+    branches: [dev/flashloan-bot-build]
+    paths:
+      - "src/**"
+      - "scanner.js"
+      - "executor.js"
+      - "config.json"
+      - ".github/workflows/v4-contract-check.yml"
+  pull_request:
+    paths:
+      - "src/**"
+      - "scanner.js"
+      - "executor.js"
+      - "config.json"
+      - ".github/workflows/v4-contract-check.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  static-checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Check JavaScript syntax
+        run: node --check scanner.js && node --check executor.js && node --check bot.js
+      - uses: foundry-rs/foundry-toolchain@v1
+      - name: Compile all Solidity contracts
+        run: forge build --sizes
