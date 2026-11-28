@@ -36,6 +36,18 @@ interface IV2Router {
     ) external returns (uint256[] memory amounts);
 }
 
+interface IV3Factory {
+    function getPool(address tokenA, address tokenB, uint24 fee) external view returns (address);
+}
+
+interface IV3SwapRouter {
+    struct ExactInputSingleParams {
+        address tokenIn; address tokenOut; uint24 fee; address recipient;
+        uint256 deadline; uint256 amountIn; uint256 amountOutMinimum; uint160 sqrtPriceLimitX96;
+    }
+    function exactInputSingle(ExactInputSingleParams calldata params) external payable returns (uint256 amountOut);
+}
+
 /// @notice Two-hop V2 flash-arbitrage receiver.
 /// @dev Still experimental: use only on a fork until independently audited.
 contract AaveV3FlashArb {
@@ -46,6 +58,7 @@ contract AaveV3FlashArb {
     mapping(address => bool) public approvedToken;
     mapping(address => bool) public approvedRouter;
     mapping(address => address) public routerFactory;
+    mapping(address => uint8) public routerType;
 
     bool private active;
     bool private callbackSeen;
@@ -59,6 +72,8 @@ contract AaveV3FlashArb {
         address sellRouter;
         uint256 minIntermediateOut;
         uint256 minFinalOut;
+        uint24 buyFee;
+        uint24 sellFee;
         // Caller-supplied reserve in borrowed-asset units. The executor must
         // calculate this from final calldata L2 + L1 fees with a safety buffer.
         uint256 gasReserveInAsset;
@@ -110,8 +125,24 @@ contract AaveV3FlashArb {
             address factory = IV2Router(router).factory();
             require(factory != address(0) && factory.code.length > 0, "BAD_FACTORY");
             routerFactory[router] = factory;
+            routerType[router] = 1;
         } else {
             delete routerFactory[router];
+            delete routerType[router];
+        }
+        approvedRouter[router] = approved;
+        emit RouterApproval(router, approved);
+    }
+
+    function setV3Router(address router, address factory, bool approved) external onlyOwner whenIdle {
+        require(router != address(0) && router.code.length > 0, "BAD_V3_ROUTER");
+        if (approved) {
+            require(factory != address(0) && factory.code.length > 0, "BAD_V3_FACTORY");
+            routerFactory[router] = factory;
+            routerType[router] = 2;
+        } else {
+            delete routerFactory[router];
+            delete routerType[router];
         }
         approvedRouter[router] = approved;
         emit RouterApproval(router, approved);
@@ -175,12 +206,12 @@ contract AaveV3FlashArb {
 
         uint256 midOut = _swap(
             r.buyRouter, asset, r.intermediateToken, amount,
-            r.minIntermediateOut, r.deadline
+            r.minIntermediateOut, r.deadline, r.buyFee
         );
 
         _swap(
             r.sellRouter, r.intermediateToken, asset, midOut,
-            r.minFinalOut, r.deadline
+            r.minFinalOut, r.deadline, r.sellFee
         );
 
         uint256 owed = amount + premium;
@@ -201,28 +232,39 @@ contract AaveV3FlashArb {
     }
 
     function _swap(
-        address router,
-        address tokenIn,
-        address tokenOut,
-        uint256 amountIn,
-        uint256 minOut,
-        uint256 deadline
+        address router, address tokenIn, address tokenOut, uint256 amountIn,
+        uint256 minOut, uint256 deadline, uint24 fee
     ) internal returns (uint256 actualAmountOut) {
         require(approvedRouter[router] && router.code.length > 0, "BAD_ROUTER");
-        address factory = IV2Router(router).factory();
-        require(factory != address(0) && factory == routerFactory[router] && factory.code.length > 0, "FACTORY_MISMATCH");
+        uint8 kind = routerType[router];
+        require(kind == 1 || kind == 2, "UNKNOWN_ROUTER_TYPE");
         uint256 inputBefore = IERC20(tokenIn).balanceOf(address(this));
         uint256 outputBefore = IERC20(tokenOut).balanceOf(address(this));
-
         _safeApprove(tokenIn, router, amountIn);
-        address[] memory path = new address[](2);
-        path[0] = tokenIn;
-        path[1] = tokenOut;
 
-        uint256[] memory amounts = IV2Router(router).swapExactTokensForTokens(
-            amountIn, minOut, path, address(this), deadline
-        );
-        require(amounts.length == 2 && amounts[1] >= minOut, "BAD_SWAP_RESULT");
+        if (kind == 1) {
+            address factory = IV2Router(router).factory();
+            require(factory != address(0) && factory == routerFactory[router] && factory.code.length > 0, "V2_FACTORY_MISMATCH");
+            address[] memory path = new address[](2);
+            path[0] = tokenIn;
+            path[1] = tokenOut;
+            uint256[] memory amounts = IV2Router(router).swapExactTokensForTokens(
+                amountIn, minOut, path, address(this), deadline
+            );
+            require(amounts.length == 2 && amounts[1] >= minOut, "BAD_V2_SWAP_RESULT");
+        } else {
+            require(fee == 500 || fee == 3000 || fee == 10000, "UNSUPPORTED_V3_FEE");
+            address v3Pool = IV3Factory(routerFactory[router]).getPool(tokenIn, tokenOut, fee);
+            require(v3Pool != address(0) && v3Pool.code.length > 0, "V3_POOL_MISSING");
+            uint256 amountOut = IV3SwapRouter(router).exactInputSingle(
+                IV3SwapRouter.ExactInputSingleParams({
+                    tokenIn: tokenIn, tokenOut: tokenOut, fee: fee, recipient: address(this),
+                    deadline: deadline, amountIn: amountIn, amountOutMinimum: minOut,
+                    sqrtPriceLimitX96: 0
+                })
+            );
+            require(amountOut >= minOut, "BAD_V3_SWAP_RESULT");
+        }
 
         uint256 inputAfter = IERC20(tokenIn).balanceOf(address(this));
         uint256 outputAfter = IERC20(tokenOut).balanceOf(address(this));
