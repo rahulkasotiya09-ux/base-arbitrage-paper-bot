@@ -16,7 +16,11 @@ const scannerWallet = process.env.WALLET_PRIVATE_KEY ? new ethers.Wallet(process
 const scannerExecutor = process.env.EXECUTOR_ADDRESS && scannerWallet ? new ethers.Contract(
   ethers.getAddress(process.env.EXECUTOR_ADDRESS), [
     "function start(address asset,uint256 amount,(address intermediateToken,address buyRouter,address sellRouter,uint256 minIntermediateOut,uint256 minFinalOut,uint256 gasReserveInAsset,uint256 minProfit,uint256 deadline) route)",
-    "function startV3(address asset,uint256 amount,(address intermediateToken,address buyRouter,address sellRouter,uint256 minIntermediateOut,uint256 minFinalOut,uint24 buyFee,uint24 sellFee,uint256 gasReserveInAsset,uint256 minProfit,uint256 deadline) route)"
+    "function startV3(address asset,uint256 amount,(address intermediateToken,address buyRouter,address sellRouter,uint256 minIntermediateOut,uint256 minFinalOut,uint24 buyFee,uint24 sellFee,uint256 gasReserveInAsset,uint256 minProfit,uint256 deadline) route)",
+    "function startV4(address asset,uint256 amount,(address intermediateToken,address buyRouter,address sellRouter,uint256 minIntermediateOut,uint256 minFinalOut,uint24 buyFee,uint24 sellFee,int24 buyTickSpacing,int24 sellTickSpacing,uint256 gasReserveInAsset,uint256 minProfit,uint256 deadline) route)",
+    "function poolManager() view returns (address)",
+    "function routerType(address) view returns (uint8)",
+    "function approvedRouter(address) view returns (bool)"
   ], scannerWallet) : null;
 // Keep quote traffic off a single public RPC. Optional private/provider endpoints can
 // be supplied through RPC_FALLBACK_URLS (comma-separated); public Base endpoints are
@@ -71,20 +75,27 @@ async function loadScannerMinimumProfit() {
   scannerMinimumProfitWeth = ceilDiv(BigInt(cfg.minProfitUsdCents ?? 1) * 10n ** 18n * 10n ** BigInt(decimals), answer * 100n);
 }
 async function estimateCandidateExecutionFees(c, amountIn, midOut, baseOut, blockTag, feeData) {
-  if (!["v2","v3"].includes(c.buy.type) || !["v2","v3"].includes(c.sell.type))
+  if (!["v2","v3","v4"].includes(c.buy.type) || !["v2","v3","v4"].includes(c.sell.type))
     throw new Error("Discovery-only route has no matching executor");
+  const hasV4 = c.buy.type === "v4" || c.sell.type === "v4";
   const hasV3 = c.buy.type === "v3" || c.sell.type === "v3";
+  const buyFee = Number(c.buyFee?.fee ?? c.buyFee ?? 0);
+  const sellFee = Number(c.sellFee?.fee ?? c.sellFee ?? 0);
   const route = {
     intermediateToken: c.midToken.address, buyRouter: c.buy.router, sellRouter: c.sell.router,
     minIntermediateOut: midOut * (10000n-SCANNER_SLIPPAGE_BPS)/10000n,
     minFinalOut: baseOut * (10000n-SCANNER_SLIPPAGE_BPS)/10000n,
-    buyFee: Number(c.buyFee ?? 0), sellFee: Number(c.sellFee ?? 0),
+    buyFee, sellFee,
+    buyTickSpacing: Number(c.buyFee?.tickSpacing ?? 0),
+    sellTickSpacing: Number(c.sellFee?.tickSpacing ?? 0),
     gasReserveInAsset: 1n, minProfit: scannerMinimumProfitWeth,
     deadline: BigInt(Math.floor(Date.now()/1000)+45)
   };
-  const populate = r => hasV3
-    ? scannerExecutor.startV3.populateTransaction(cfg.tokens.WETH.address, amountIn, r)
-    : scannerExecutor.start.populateTransaction(cfg.tokens.WETH.address, amountIn, r);
+  const populate = r => hasV4
+    ? scannerExecutor.startV4.populateTransaction(cfg.tokens.WETH.address, amountIn, r)
+    : hasV3
+      ? scannerExecutor.startV3.populateTransaction(cfg.tokens.WETH.address, amountIn, r)
+      : scannerExecutor.start.populateTransaction(cfg.tokens.WETH.address, amountIn, r);
   const feeFields = feeData.maxFeePerGas
     ? {maxFeePerGas:feeData.maxFeePerGas,maxPriorityFeePerGas:feeData.maxPriorityFeePerGas ?? 0n}
     : {gasPrice:feeData.gasPrice};
@@ -296,6 +307,7 @@ async function runBounded(items, concurrency, worker) {
 }
 
 function feeOptions(v) { return v.type === "v3" || v.type === "v4" ? v.fees : v.type === "aerodrome" ? [false, true] : [0]; }
+function feeKey(fee) { return fee && typeof fee === "object" ? `${fee.fee}:${fee.tickSpacing}` : String(fee); }
 
 async function notifyTelegram(message) {
   const botToken = process.env.TELEGRAM_BOT_TOKEN;
@@ -316,6 +328,15 @@ async function main() {
     provider.getNetwork(), provider.getBlockNumber(), provider.getFeeData()
   ]);
   await loadScannerMinimumProfit();
+  const v4ExecutionEnabled = process.env.EXECUTOR_V4_ENABLED === "true";
+  if (v4ExecutionEnabled) {
+    if (!scannerExecutor || !cfg.poolManager) throw new Error("V4 execution enabled without executor or configured PoolManager");
+    const [deployedManager, managerType, managerAllowed] = await Promise.all([
+      scannerExecutor.poolManager(), scannerExecutor.routerType(cfg.poolManager), scannerExecutor.approvedRouter(cfg.poolManager)
+    ]);
+    if (deployedManager.toLowerCase() !== cfg.poolManager.toLowerCase() || Number(managerType) !== 3 || !managerAllowed)
+      throw new Error("Deployed executor is not configured for this exact V4 PoolManager");
+  }
   if (Number(network.chainId) !== cfg.chainId) throw new Error(`RPC chain mismatch: expected ${cfg.chainId}, got ${network.chainId}`);
   for (const venue of cfg.venues) {
     const target = ["v3", "v4"].includes(venue.type) ? venue.quoter : venue.router;
@@ -353,7 +374,7 @@ async function main() {
   async function hasConfiguredPool(venue, token) {
     let anyExists = false;
     for (const fee of feeOptions(venue)) {
-      const key = [venue.name, token.address.toLowerCase(), String(fee)].join(":");
+      const key = [venue.name, token.address.toLowerCase(), feeKey(fee)].join(":");
       if (routeableVenueKeys.has(key)) { anyExists = true; continue; }
       // V4 has no factory probe in this scanner; its Quoter performs the
       // authoritative no-hook/pool/liquidity validation during route quoting.
@@ -420,8 +441,8 @@ async function main() {
         for (const buy of scanVenues) for (const sell of scanVenues) {
           if (buy.name === sell.name) continue;
           for (const buyFee of feeOptions(buy)) for (const sellFee of feeOptions(sell)) {
-            const buyPoolKey = [buy.name, midToken.address.toLowerCase(), String(buyFee)].join(":");
-            const sellPoolKey = [sell.name, midToken.address.toLowerCase(), String(sellFee)].join(":");
+            const buyPoolKey = [buy.name, midToken.address.toLowerCase(), feeKey(buyFee)].join(":");
+            const sellPoolKey = [sell.name, midToken.address.toLowerCase(), feeKey(sellFee)].join(":");
             if (!routeableVenueKeys.has(buyPoolKey) || !routeableVenueKeys.has(sellPoolKey)) {
               poolProbeStats.tasksSkippedNoPool++;
               continue;
@@ -446,7 +467,8 @@ async function main() {
     if (baseOut <= amountOwed) { stats.rejectedBeforeGas++; return; }
     const gross = baseOut - amountOwed;
     if (baseToken.address.toLowerCase() !== cfg.wrappedNative.toLowerCase()) return;
-    const executorCompatible = ["v2", "v3"].includes(buy.type) && ["v2", "v3"].includes(sell.type);
+    const v4Ready = v4ExecutionEnabled || (buy.type !== "v4" && sell.type !== "v4");
+    const executorCompatible = v4Ready && ["v2", "v3", "v4"].includes(buy.type) && ["v2", "v3", "v4"].includes(sell.type);
     if (!executorCompatible) {
       discoveryOnlyRows.push({
         block, base: amounts.token, routeHops: 2, route: ["WETH", midName, "WETH"],
@@ -457,7 +479,7 @@ async function main() {
         estimatedNetProfit: null, feeEstimateStatus: "not_estimated_executor_unsupported",
         gasAdjusted: false, l1DataFeeIncluded: false, executorCompatible: false,
         executionStatus: "discovery_only",
-        note: "Positive gross surplus after flash-loan premium only. Current executor does not support this venue combination; gas/L1 fees and net profit are not estimated."
+        note: "Positive gross surplus after flash-loan premium only. V4 remains discovery-only until EXECUTOR_V4_ENABLED=true is set for a deployed V4-capable executor; gas/L1 fees and net profit are not estimated."
       });
       return;
     }
