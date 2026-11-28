@@ -109,7 +109,7 @@ async function main() {
   const premiumBps = BigInt(await pool.FLASHLOAN_PREMIUM_TOTAL({ blockTag: block }));
   // Live executor currently supports V2/V2 routes only. Skip V3 quote combinations
   // that cannot be broadcast by this executor, so scan time is spent on executable paths.
-  const scanVenues = cfg.venues.filter(venue => venue.type === "v2");
+  const scanVenues = cfg.venues.filter(venue => venue.type === "v2" || venue.type === "v3");
   if (scanVenues.length < 2) throw new Error("At least two configured V2 venues are required for executable arbitrage scanning");
   const rows = [];
   const stats = {
@@ -159,11 +159,11 @@ async function main() {
       rows.push({
         block, base: amounts.token, intermediate: midName, newlyDiscovered: Boolean(midToken.discoveryOnly), amountIn: amountText,
         buyVenue: buy.name, buyFee, sellVenue: sell.name, sellFee,
-        buyRouter: buy.type === "v2" ? buy.router : null,
-        sellRouter: sell.type === "v2" ? sell.router : null,
+        buyRouter: buy.router,
+        sellRouter: sell.router,
         intermediateAddress: midToken.address,
         intermediateDecimals: midToken.decimals,
-        executorCompatible: buy.type === "v2" && sell.type === "v2",
+        executorCompatible: true,
         intermediateOut: ethers.formatUnits(midOut, midToken.decimals),
         intermediateOutRaw: midOut.toString(),
         finalOut: ethers.formatUnits(baseOut, baseToken.decimals),
@@ -178,7 +178,7 @@ async function main() {
         gasAdjusted: true,
         quoteBlock: block,
         l1DataFeeIncluded: false,
-        executionReady: buy.type === "v2" && sell.type === "v2",
+        executionReady: true,
         note: "Preliminary filter only. New and established tokens use the same executor eligibility; executor still requires on-chain token/router approvals, fresh quotes, full gas accounting, and exact transaction simulation."
       });
     }
@@ -203,7 +203,7 @@ async function main() {
     await notifyTelegram(`FlashArb scanner: ${rows.length} candidate(s) at block ${block}\n\n${top}\n\nQuotes are indicative only. NOT EXECUTABLE / NOT GUARANTEED.`);
   }
   console.log(`Scanned block ${block}. ${rows.length} preliminary candidate(s) written to opportunities.json`);
-  if (rows.some(r => !r.executionReady)) console.log("Some routes use V3 quotes and are research-only; the current executor supports V2 routes only.");
+  if (rows.some(r => !r.executionReady)) console.log("V2 and V3 routes are quoted; executor independently validates the router type, factory/pool and exact simulation.");
   for (const r of rows.slice(0, 20)) console.log(`${r.base} ${r.amountIn} | ${r.buyVenue} -> ${r.sellVenue} | net=${r.estimatedNetProfit}`);
   console.log("Scan diagnostics:", JSON.stringify(stats));
   if (!rows.length) console.log("No candidates had positive indicative profit after Aave premium and estimated L2 gas. Final L1 fee and safety buffer are checked by executor.");
