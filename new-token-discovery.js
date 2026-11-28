@@ -1,5 +1,4 @@
 import "dotenv/config";
-import "node:fs";
 import fs from "node:fs";
 import { ethers } from "ethers";
 import { verifyNewTokenSecurity } from "./token-security.js";
