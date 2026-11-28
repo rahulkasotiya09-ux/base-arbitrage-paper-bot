@@ -12,8 +12,28 @@ export async function verifyNewTokenSecurity(address) {
   const normalized = ethers.getAddress(address);
   const url = new URL(API);
   url.searchParams.set("contract_addresses", normalized.toLowerCase());
-  const response = await fetch(url, { signal: AbortSignal.timeout(12000) });
-  if (!response.ok) throw new Error(`GoPlus security API HTTP ${response.status}`);
+  let response;
+  let lastError;
+  for (let attempt = 0; attempt < 4; attempt++) {
+    try {
+      response = await fetch(url, { signal: AbortSignal.timeout(12000) });
+      if (response.ok) break;
+      if (response.status !== 429 && response.status < 500) {
+        throw new Error(`GoPlus security API HTTP ${response.status}`);
+      }
+      lastError = new Error(`GoPlus security API HTTP ${response.status}`);
+      const retryAfter = Number(response.headers.get("retry-after"));
+      const delayMs = Number.isFinite(retryAfter) && retryAfter > 0
+        ? Math.min(retryAfter * 1000, 15000)
+        : Math.min(1500 * (2 ** attempt), 12000);
+      if (attempt < 3) await new Promise(resolve => setTimeout(resolve, delayMs));
+    } catch (error) {
+      lastError = error;
+      if (attempt === 3) throw error;
+      await new Promise(resolve => setTimeout(resolve, Math.min(1500 * (2 ** attempt), 12000)));
+    }
+  }
+  if (!response?.ok) throw lastError ?? new Error("GoPlus security API unavailable after retries");
   const payload = await response.json();
   if (String(payload.code) !== "1" || !payload.result || typeof payload.result !== "object") {
     throw new Error(`GoPlus returned no authoritative result: ${payload.message ?? "unknown response"}`);
