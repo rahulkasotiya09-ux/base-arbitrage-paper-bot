@@ -12,6 +12,12 @@ if (!configuredRpc) throw new Error("Set RPC_URL in .env (use a trusted Ethereum
 const rpc = configuredRpc.replace(/\/$/, "") === "https://mainnet.base.org"
   ? "https://base-rpc.publicnode.com" : configuredRpc;
 const provider = new ethers.JsonRpcProvider(rpc, cfg.chainId, { staticNetwork: true });
+const scannerWallet = process.env.WALLET_PRIVATE_KEY ? new ethers.Wallet(process.env.WALLET_PRIVATE_KEY, provider) : null;
+const scannerExecutor = process.env.EXECUTOR_ADDRESS && scannerWallet ? new ethers.Contract(
+  ethers.getAddress(process.env.EXECUTOR_ADDRESS), [
+    "function start(address asset,uint256 amount,(address intermediateToken,address buyRouter,address sellRouter,uint256 minIntermediateOut,uint256 minFinalOut,uint256 gasReserveInAsset,uint256 minProfit,uint256 deadline) route)",
+    "function startV3(address asset,uint256 amount,(address intermediateToken,address buyRouter,address sellRouter,uint256 minIntermediateOut,uint256 minFinalOut,uint24 buyFee,uint24 sellFee,uint256 gasReserveInAsset,uint256 minProfit,uint256 deadline) route)"
+  ], scannerWallet) : null;
 // Keep quote traffic off a single public RPC. Optional private/provider endpoints can
 // be supplied through RPC_FALLBACK_URLS (comma-separated); public Base endpoints are
 // defaults so the scanner improves immediately without requiring another secret.
@@ -46,30 +52,69 @@ const AAVE_RESERVE_ABI = ["function balanceOf(address) view returns (uint256)"];
 const AAVE_PROVIDER = cfg.aaveAddressesProvider;
 const L1_FEE_ORACLE = "0x420000000000000000000000000000000000000F";
 const L1_FEE_IFACE = new ethers.Interface(["function getL1Fee(bytes data) view returns (uint256)"]);
-const EXECUTOR_CALL_IFACE = new ethers.Interface([
-  "function start(address asset,uint256 amount,(address intermediateToken,address buyRouter,address sellRouter,uint256 minIntermediateOut,uint256 minFinalOut,uint256 gasReserveInAsset,uint256 minProfit,uint256 deadline) route)",
-  "function startV3(address asset,uint256 amount,(address intermediateToken,address buyRouter,address sellRouter,uint256 minIntermediateOut,uint256 minFinalOut,uint24 buyFee,uint24 sellFee,uint256 gasReserveInAsset,uint256 minProfit,uint256 deadline) route)"
-]);
 const SCANNER_SLIPPAGE_BPS = BigInt(process.env.SLIPPAGE_BPS ?? "30");
-async function estimateCandidateL1Fee(candidate, amountIn, midOut, baseOut, blockTag) {
-  const minMid = midOut * (10000n - SCANNER_SLIPPAGE_BPS) / 10000n;
-  const minBase = baseOut * (10000n - SCANNER_SLIPPAGE_BPS) / 10000n;
-  const deadline = BigInt(Math.floor(Date.now() / 1000) + 45);
-  const conservativeCalldataWord = (1n << 256n) - 1n;
-  const hasV3 = candidate.buy.type === "v3" || candidate.sell.type === "v3";
-  const data = hasV3
-    ? EXECUTOR_CALL_IFACE.encodeFunctionData("startV3", [
-        cfg.tokens.WETH.address, amountIn,
-        [candidate.midToken.address, candidate.buy.router, candidate.sell.router, minMid, minBase,
-          Number(candidate.buyFee ?? 0), Number(candidate.sellFee ?? 0), conservativeCalldataWord, conservativeCalldataWord, deadline]
-      ])
-    : EXECUTOR_CALL_IFACE.encodeFunctionData("start", [
-        cfg.tokens.WETH.address, amountIn,
-        [candidate.midToken.address, candidate.buy.router, candidate.sell.router, minMid, minBase, conservativeCalldataWord, conservativeCalldataWord, deadline]
-      ]);
-  const call = L1_FEE_IFACE.encodeFunctionData("getL1Fee", [data]);
-  const raw = await provider.call({ to: L1_FEE_ORACLE, data: call }, blockTag);
-  return L1_FEE_IFACE.decodeFunctionResult("getL1Fee", raw)[0];
+const SCANNER_GAS_BUFFER_BPS = BigInt(process.env.GAS_BUFFER_BPS ?? "20000");
+const ceilDiv = (n, d) => (n + d - 1n) / d;
+let scannerMinimumProfitWeth = 1n;
+async function loadScannerMinimumProfit() {
+  if (!cfg.ethUsdFeed || !scannerWallet || !scannerExecutor) throw new Error("Executor credentials/config unavailable for exact fee estimation");
+  const feed = new ethers.Contract(cfg.ethUsdFeed, [
+    "function decimals() view returns (uint8)", "function description() view returns (string)",
+    "function latestRoundData() view returns (uint80,int256,uint256,uint256,uint80)"
+  ], provider);
+  const [decimals, description, round] = await Promise.all([feed.decimals(), feed.description(), feed.latestRoundData()]);
+  const [roundId, answer, , updatedAt, answeredInRound] = round;
+  const now = BigInt(Math.floor(Date.now() / 1000));
+  if (description.trim().toUpperCase() !== "ETH / USD" || answer <= 0n || updatedAt === 0n ||
+      answeredInRound < roundId || now < updatedAt || now - updatedAt > BigInt(cfg.maxEthUsdPriceAgeSeconds ?? 1800))
+    throw new Error("ETH/USD feed invalid or stale; refusing scanner profitability estimates");
+  scannerMinimumProfitWeth = ceilDiv(BigInt(cfg.minProfitUsdCents ?? 1) * 10n ** 18n * 10n ** BigInt(decimals), answer * 100n);
+}
+async function estimateCandidateExecutionFees(c, amountIn, midOut, baseOut, blockTag, feeData) {
+  if (!["v2","v3"].includes(c.buy.type) || !["v2","v3"].includes(c.sell.type))
+    throw new Error("Discovery-only route has no matching executor");
+  const hasV3 = c.buy.type === "v3" || c.sell.type === "v3";
+  const route = {
+    intermediateToken: c.midToken.address, buyRouter: c.buy.router, sellRouter: c.sell.router,
+    minIntermediateOut: midOut * (10000n-SCANNER_SLIPPAGE_BPS)/10000n,
+    minFinalOut: baseOut * (10000n-SCANNER_SLIPPAGE_BPS)/10000n,
+    buyFee: Number(c.buyFee ?? 0), sellFee: Number(c.sellFee ?? 0),
+    gasReserveInAsset: 1n, minProfit: scannerMinimumProfitWeth,
+    deadline: BigInt(Math.floor(Date.now()/1000)+45)
+  };
+  const populate = r => hasV3
+    ? scannerExecutor.startV3.populateTransaction(cfg.tokens.WETH.address, amountIn, r)
+    : scannerExecutor.start.populateTransaction(cfg.tokens.WETH.address, amountIn, r);
+  const feeFields = feeData.maxFeePerGas
+    ? {maxFeePerGas:feeData.maxFeePerGas,maxPriorityFeePerGas:feeData.maxPriorityFeePerGas ?? 0n}
+    : {gasPrice:feeData.gasPrice};
+  const gasPriceCap = feeData.maxFeePerGas ?? feeData.gasPrice;
+  if (!gasPriceCap) throw new Error("Missing gas price");
+  const l1 = async data => {
+    const call=L1_FEE_IFACE.encodeFunctionData("getL1Fee",[data ?? "0x"]);
+    const raw=await provider.call({to:L1_FEE_ORACLE,data:call},blockTag);
+    return L1_FEE_IFACE.decodeFunctionResult("getL1Fee",raw)[0];
+  };
+  let gas=0n,l1Fee=0n,gasLimit=0n,reserve=1n,converged=false;
+  for(let i=0;i<12;i++){
+    const tx=await populate(route);
+    [gas,l1Fee]=await Promise.all([
+      provider.estimateGas({...tx,from:scannerWallet.address,...feeFields}), l1(tx.data)
+    ]);
+    gasLimit=ceilDiv(gas*120n,100n);
+    const next=ceilDiv((gasLimit*gasPriceCap+l1Fee)*SCANNER_GAS_BUFFER_BPS,10000n);
+    if(next===reserve){converged=true;break;}
+    reserve=next; route.gasReserveInAsset=reserve;
+  }
+  if(!converged) throw new Error("Executor fee reserve did not converge");
+  const finalTx=await populate(route);
+  const [finalGas,finalL1]=await Promise.all([
+    provider.estimateGas({...finalTx,from:scannerWallet.address,...feeFields}),l1(finalTx.data)
+  ]);
+  const finalLimit=ceilDiv(finalGas*120n,100n);
+  const finalReserve=ceilDiv((finalLimit*gasPriceCap+finalL1)*SCANNER_GAS_BUFFER_BPS,10000n);
+  if(finalReserve!==route.gasReserveInAsset) throw new Error("Final calldata fee reserve changed");
+  return {gas:finalGas,gasLimit:finalLimit,l2Cost:finalLimit*gasPriceCap,l1Fee:finalL1,reserve:finalReserve,gasPriceCap};
 }
 
 // Build venue contracts against each quote endpoint; the primary provider remains
@@ -267,6 +312,7 @@ async function main() {
   const [network, block, feeData] = await Promise.all([
     provider.getNetwork(), provider.getBlockNumber(), provider.getFeeData()
   ]);
+  await loadScannerMinimumProfit();
   if (Number(network.chainId) !== cfg.chainId) throw new Error(`RPC chain mismatch: expected ${cfg.chainId}, got ${network.chainId}`);
   for (const venue of cfg.venues) {
     const target = ["v3", "v4"].includes(venue.type) ? venue.quoter : venue.router;
@@ -385,27 +431,21 @@ async function main() {
     const amountOwed = amountIn + premium;
     if (baseOut <= amountOwed) { stats.rejectedBeforeGas++; return; }
     const gross = baseOut - amountOwed;
-    const gasPrice = feeData.maxFeePerGas ?? feeData.gasPrice;
-    if (baseToken.address.toLowerCase() !== cfg.wrappedNative.toLowerCase() || !gasPrice) return;
-    // Advisory scanner estimates are route-specific and intentionally lower
-    // than the executor's final measured gas. The executor still performs an
-    // exact estimate, L1 fee calculation and full transaction simulation.
-    const scannerGasUnits = buy.type === "v4" || sell.type === "v4" ? 750000n
-      : buy.type === "v3" && sell.type === "v3" ? 550000n
-      : buy.type === "v3" || sell.type === "v3" ? 450000n : 350000n;
-    const l2GasCostBase = scannerGasUnits * gasPrice;
-    if (gross <= l2GasCostBase) { stats.rejectedAfterGas++; return; }
-    let l1DataFeeBase;
+    if (baseToken.address.toLowerCase() !== cfg.wrappedNative.toLowerCase()) return;
+    let feeEstimate;
     try {
-      l1DataFeeBase = await estimateCandidateL1Fee(
-        { midToken, buy, sell, buyFee, sellFee }, amountIn, midOut, baseOut, block
-      );
-    } catch (error) {
-      stats.l1FeeEstimateFailures = (stats.l1FeeEstimateFailures ?? 0) + 1;
-      return; // Never label a route profitable when its L1 fee could not be estimated.
+      feeEstimate = await estimateCandidateExecutionFees({midToken,buy,sell,buyFee,sellFee},amountIn,midOut,baseOut,block,feeData);
+    } catch {
+      stats.executionFeeEstimateFailures = (stats.executionFeeEstimateFailures ?? 0) + 1;
+      return;
     }
+    const l2GasCostBase = feeEstimate.l2Cost;
+    const l1DataFeeBase = feeEstimate.l1Fee;
     const gasCostBase = l2GasCostBase + l1DataFeeBase;
-    if (gross <= gasCostBase) { stats.rejectedAfterGas++; return; }
+    if (gross <= feeEstimate.reserve || gross <= gasCostBase + scannerMinimumProfitWeth) {
+      stats.rejectedAfterGas++;
+      return;
+    }
     const net = gross - gasCostBase;
     if (net > 0n) {
       stats.profitableIndicative++;
@@ -428,12 +468,16 @@ async function main() {
         estimatedGasCost: ethers.formatUnits(gasCostBase, baseToken.decimals),
         estimatedL2GasCost: ethers.formatUnits(l2GasCostBase, baseToken.decimals),
         estimatedL1DataFee: ethers.formatUnits(l1DataFeeBase, baseToken.decimals),
+        measuredExecutorGas: feeEstimate.gas.toString(),
+        transactionGasLimitWith20PercentHeadroom: feeEstimate.gasLimit.toString(),
+        bufferedGasReserve: ethers.formatUnits(feeEstimate.reserve, baseToken.decimals),
+        exactExecutorCalldataL1Fee: true,
         l1DataFeeIncluded: true,
         estimatedNetProfit: ethers.formatUnits(net, baseToken.decimals),
         estimatedNetProfitRaw: net.toString(),
-        gasPriceWei: gasPrice.toString(),
+        gasPriceWei: feeEstimate.gasPriceCap.toString(),
         gasAdjusted: true,
-        scannerGasUnits: scannerGasUnits.toString(),
+        routeSpecificGasEstimate: true,
         quoteBlock: block,
         l1DataFeeIncluded: false,
         executionStatus: !["v2", "v3"].includes(buy.type) || !["v2", "v3"].includes(sell.type) ? "discovery_only" : "requires_executor_validation",
