@@ -46,6 +46,18 @@
     "GHO": {
       "address": "0x6Bb7a212910682DCFdbd5BCBb3e28FB4E8da10Ee",
       "decimals": 18
+    },
+    "USDbC": {
+      "address": "0xd9aAEc86B65D86f6A7B5B1b0c42FFA531710b6CA",
+      "decimals": 6
+    },
+    "AERO": {
+      "address": "0x940181a94A35A4569E4529A3CDfB74e38FD98631",
+      "decimals": 18
+    },
+    "cbBTC": {
+      "address": "0xcbb7c0000ab88b473b1f5afd9ef808440eed33bf",
+      "decimals": 8
     }
   },
   "venues": [
