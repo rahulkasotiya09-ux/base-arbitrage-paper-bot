@@ -536,6 +536,7 @@ async function main() {
       }
     }
   }
+  const discoveryOnlyRows = [];
   stats.threeHopRoutesAttempted = tripleTasks.length;
   stats.threeHopQuoteCalls = 0;
   stats.threeHopQuoteFailures = 0;
@@ -555,14 +556,9 @@ async function main() {
     const owed = amountIn + premium;
     if (finalOut <= owed) { stats.rejectedBeforeGas++; return; }
     const gross = finalOut - owed;
-    const gasPrice = feeData.maxFeePerGas ?? feeData.gasPrice;
-    if (!gasPrice) return;
-    const gasUnits = 850000n;
-    const gasCost = gasUnits * gasPrice;
-    if (gross <= gasCost) { stats.rejectedAfterGas++; return; }
-    const net = gross - gasCost;
-    stats.threeHopProfitableIndicative = (stats.threeHopProfitableIndicative ?? 0) + 1;
-    rows.push({
+    const gross = finalOut - owed;
+    stats.threeHopGrossPositive = (stats.threeHopGrossPositive ?? 0) + 1;
+    discoveryOnlyRows.push({
       block, base: "WETH", routeHops: 3,
       route: ["WETH", firstName, secondName, "WETH"],
       intermediates: [
@@ -572,18 +568,14 @@ async function main() {
       amountIn: amountText,
       venues: [firstVenue.name, secondVenue.name, thirdVenue.name],
       fees: [firstFee, secondFee, thirdFee],
-      grossProfit: ethers.formatUnits(gross, 18),
-      estimatedGasCost: ethers.formatUnits(gasCost, 18),
-      estimatedNetProfit: ethers.formatUnits(net, 18),
-      estimatedNetProfitRaw: net.toString(),
-      gasPriceWei: gasPrice.toString(),
-      scannerGasUnits: gasUnits.toString(),
-      quoteBlock: block,
-      gasAdjusted: true,
+      grossSurplusAfterFlashPremium: ethers.formatUnits(gross, 18),
+      estimatedNetProfit: null,
+      feeEstimateStatus: "not_estimated_executor_unsupported",
+      gasAdjusted: false,
       l1DataFeeIncluded: false,
       executorCompatible: false,
       executionStatus: "discovery_only",
-      note: "Three-hop discovery-only route. Current executor supports two-hop V2/V3 routes only; exact L1 data fee and full simulation are not included."
+      note: "Three-hop route has positive gross surplus after flash-loan premium, but no net-profit estimate: current executor does not support three-hop execution."
     });
   });
 
@@ -599,7 +591,8 @@ async function main() {
     gasLimitEstimate: cfg.gasLimitEstimate,
     stats: { ...stats, quoteFailureKinds, quoteVenueStats, quoteRetryStats, quoteEndpointStats,
       quoteRpcEndpoints: quoteProviders.length },
-    candidates: rows
+    candidates: rows,
+    discoveryOnlyCandidates: discoveryOnlyRows
   };
   fs.writeFileSync("opportunities.json", JSON.stringify(output, null, 2));
   if (rows.length) {
