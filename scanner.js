@@ -20,6 +20,7 @@ const scannerExecutor = process.env.EXECUTOR_ADDRESS && scannerWallet ? new ethe
     "function startV4(address asset,uint256 amount,(address intermediateToken,address buyRouter,address sellRouter,uint256 minIntermediateOut,uint256 minFinalOut,uint24 buyFee,uint24 sellFee,int24 buyTickSpacing,int24 sellTickSpacing,uint256 gasReserveInAsset,uint256 minProfit,uint256 deadline) route)",
     "function poolManager() view returns (address)",
     "function routerType(address) view returns (uint8)",
+    "function routerFactory(address) view returns (address)",
     "function approvedRouter(address) view returns (bool)"
   ], scannerWallet) : null;
 // Keep quote traffic off a single public RPC. Optional private/provider endpoints can
@@ -410,11 +411,53 @@ async function main() {
   if (scanVenues.length < 2) throw new Error("At least two configured V2/V3 venues are required for arbitrage scanning");
   const rows = [];
   const discoveryOnlyRows = [];
+  const compatibilityRejectionReasons = Object.create(null);
+  const compatibilityRejectionSamples = [];
+  const executionVenueStatus = new Map();
+  // Read the deployed executor's actual router allowlist/type/factory bindings.
+  // This is diagnostic only: it never changes an allowlist or relaxes a guard.
+  if (scannerExecutor) {
+    for (const venue of scanVenues) {
+      if (!["v2", "v3", "v4"].includes(venue.type)) {
+        executionVenueStatus.set(venue.name, ["venue_type_not_supported_by_executor"]);
+        continue;
+      }
+      const reasons = [];
+      try {
+        const allowed = await scannerExecutor.approvedRouter(venue.router);
+        if (!allowed) reasons.push("router_not_on_executor_allowlist");
+        if (venue.type === "v2" || venue.type === "v3") {
+          const [boundFactory, routerType] = await Promise.all([
+            scannerExecutor.routerFactory(venue.router), scannerExecutor.routerType(venue.router)
+          ]);
+          if (!venue.factory || boundFactory.toLowerCase() !== venue.factory.toLowerCase())
+            reasons.push("executor_router_factory_binding_mismatch");
+          if (venue.type === "v3" && Number(routerType) !== 2)
+            reasons.push("deployed_executor_router_type_is_not_v3");
+        } else if (!v4ExecutionEnabled) reasons.push("v4_execution_disabled");
+      } catch (error) {
+        reasons.push("executor_preflight_rpc_or_abi_error");
+      }
+      executionVenueStatus.set(venue.name, reasons);
+    }
+  } else {
+    for (const venue of scanVenues) executionVenueStatus.set(venue.name, ["executor_unavailable_for_preflight"]);
+  }
   const stats = {
     routeQuotesAttempted: 0, quoteFailures: 0, insufficientFlashLiquidity: 0,
     rejectedBeforeGas: 0, rejectedAfterGas: 0, profitableIndicative: 0,
+    grossPositiveTwoHop: 0, grossPositiveUnsupportedTwoHop: 0, grossPositiveThreeHop: 0,
+    compatibilityRejectionReasons, compatibilityRejectionSamples,
     scanConcurrency: SCAN_CONCURRENCY
   };
+  function recordCompatibilityRejection(row, reasons) {
+    stats.grossPositiveUnsupportedTwoHop++;
+    for (const reason of reasons) compatibilityRejectionReasons[reason] = (compatibilityRejectionReasons[reason] ?? 0) + 1;
+    if (compatibilityRejectionSamples.length < 30) compatibilityRejectionSamples.push({
+      route: row.route, buyVenue: row.buyVenue, buyType: row.buyType,
+      sellVenue: row.sellVenue, sellType: row.sellType, reasons
+    });
+  }
   const tasks = [];
   const feeEstimateFailureKinds = Object.create(null);
   const feeEstimateFailureSamples = [];
@@ -519,10 +562,20 @@ async function main() {
     if (baseOut <= amountOwed) { stats.rejectedBeforeGas++; return; }
     const gross = baseOut - amountOwed;
     if (baseToken.address.toLowerCase() !== cfg.wrappedNative.toLowerCase()) return;
-    const v4Ready = v4ExecutionEnabled || (buy.type !== "v4" && sell.type !== "v4");
-    const executorCompatible = v4Ready && ["v2", "v3", "v4"].includes(buy.type) && ["v2", "v3", "v4"].includes(sell.type);
+    stats.grossPositiveTwoHop++;
+    const compatibilityReasons = [
+      ...(executionVenueStatus.get(buy.name) ?? ["executor_venue_preflight_missing"]),
+      ...(executionVenueStatus.get(sell.name) ?? ["executor_venue_preflight_missing"])
+    ];
+    const executorCompatible = compatibilityReasons.length === 0 &&
+      ["v2", "v3", "v4"].includes(buy.type) && ["v2", "v3", "v4"].includes(sell.type);
     if (!executorCompatible) {
-      discoveryOnlyRows.push({
+      const uniqueReasons = [...new Set([
+        ...compatibilityReasons,
+        ...(!["v2", "v3", "v4"].includes(buy.type) ? ["buy_venue_type_" + buy.type + "_unsupported"] : []),
+        ...(!["v2", "v3", "v4"].includes(sell.type) ? ["sell_venue_type_" + sell.type + "_unsupported"] : [])
+      ])];
+      const row = {
         block, base: amounts.token, routeHops: 2, route: ["WETH", midName, "WETH"],
         intermediate: midName, intermediateAddress: midToken.address, amountIn: amountText,
         buyVenue: buy.name, buyType: buy.type, buyFee,
@@ -531,8 +584,11 @@ async function main() {
         estimatedNetProfit: null, feeEstimateStatus: "not_estimated_executor_unsupported",
         gasAdjusted: false, l1DataFeeIncluded: false, executorCompatible: false,
         executionStatus: "discovery_only",
-        note: "Positive gross surplus after flash-loan premium only. V4 remains discovery-only until EXECUTOR_V4_ENABLED=true is set for a deployed V4-capable executor; gas/L1 fees and net profit are not estimated."
-      });
+        compatibilityReasons: uniqueReasons,
+        note: "Positive gross surplus after flash-loan premium only. This route was not sent to fee estimation because the deployed executor preflight rejected one or both venues; see compatibilityReasons."
+      };
+      discoveryOnlyRows.push(row);
+      recordCompatibilityRejection(row, uniqueReasons);
       return;
     }
     let feeEstimate;
@@ -545,7 +601,12 @@ async function main() {
       if (feeEstimateFailureSamples.length < 5) {
         const message = String(error?.shortMessage ?? error?.reason ?? error?.message ?? "unknown")
           .replace(/https?:\/\/\S+/g, "[rpc-url]").replace(/0x[a-fA-F0-9]{64}/g, "[hex-data]").slice(0, 180);
-        feeEstimateFailureSamples.push({ code, message, route: `${buy.name} -> ${sell.name}`, intermediate: midName, amountIn: amountText });
+        feeEstimateFailureSamples.push({
+          code, message, phase: "executor_calldata_estimate_or_l1_fee",
+          route: `${buy.name} -> ${sell.name}`, intermediate: midName, amountIn: amountText,
+          buyType: buy.type, sellType: sell.type,
+          buyFee: buyFee?.fee ?? buyFee, sellFee: sellFee?.fee ?? sellFee
+        });
       }
       return;
     }
@@ -665,6 +726,7 @@ async function main() {
     if (finalOut <= owed) { stats.rejectedBeforeGas++; return; }
     const gross = finalOut - owed;
     stats.threeHopGrossPositive = (stats.threeHopGrossPositive ?? 0) + 1;
+    stats.grossPositiveThreeHop++;
     discoveryOnlyRows.push({
       block, base: "WETH", routeHops: 3,
       route: ["WETH", firstName, secondName, "WETH"],
@@ -682,7 +744,8 @@ async function main() {
       l1DataFeeIncluded: false,
       executorCompatible: false,
       executionStatus: "discovery_only",
-      note: "Three-hop route has positive gross surplus after flash-loan premium, but no net-profit estimate: current executor does not support three-hop execution."
+      compatibilityReasons: ["executor_supports_two_hops_only"],
+      note: "Three-hop route has positive gross surplus after flash-loan premium, but current deployed executor supports only two-hop execution. No attempt was made to encode or execute it."
     });
   });
 
@@ -696,7 +759,7 @@ async function main() {
     flashLoanPremiumBps: premiumBps.toString(),
     gasPriceWei: (feeData.maxFeePerGas ?? feeData.gasPrice ?? 0n).toString(),
     gasLimitEstimate: cfg.gasLimitEstimate,
-    stats: { ...stats, feeEstimateFailureKinds, feeEstimateFailureSamples,
+    stats: { ...stats, executionVenueStatus: Object.fromEntries(executionVenueStatus), feeEstimateFailureKinds, feeEstimateFailureSamples,
       quoteFailureKinds, quoteVenueStats, quoteRetryStats, quoteEndpointStats,
       v4PreflightStats, quoteFailureSamples, quoteRpcEndpoints: quoteProviders.length },
     candidates: rows,
