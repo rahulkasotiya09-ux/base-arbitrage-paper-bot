@@ -47,6 +47,27 @@ interface IV3SwapRouter {
     }
     function exactInputSingle(ExactInputSingleParams calldata params) external payable returns (uint256 amountOut);
 }
+interface IAerodromeFactory {
+    function getPool(address tokenA, address tokenB, bool stable) external view returns (address);
+}
+interface IAerodromeRouter {
+    struct Route { address from; address to; bool stable; address factory; }
+    function defaultFactory() external view returns (address);
+    function swapExactTokensForTokens(
+        uint256 amountIn, uint256 amountOutMin, Route[] calldata routes, address to, uint256 deadline
+    ) external returns (uint256[] memory amounts);
+}
+interface ISlipstreamFactory {
+    function getPool(address tokenA, address tokenB, int24 tickSpacing) external view returns (address);
+}
+interface ISlipstreamRouter {
+    struct ExactInputSingleParams {
+        address tokenIn; address tokenOut; int24 tickSpacing; address recipient;
+        uint256 deadline; uint256 amountIn; uint256 amountOutMinimum; uint160 sqrtPriceLimitX96;
+    }
+    function factory() external view returns (address);
+    function exactInputSingle(ExactInputSingleParams calldata params) external payable returns (uint256 amountOut);
+}
 
 interface IV4PoolManager {
     struct PoolKey { address currency0; address currency1; uint24 fee; int24 tickSpacing; address hooks; }
@@ -80,6 +101,7 @@ contract AaveV3FlashArbV4 is IUnlockCallback {
     uint256 private loanAmount;
     uint256 private startingBalance;
     bool private v4RouteActive;
+    bool private multiRouteActive;
     bool private v4UnlockActive;
     bool private v4CallbackSeen;
 
@@ -102,6 +124,23 @@ contract AaveV3FlashArbV4 is IUnlockCallback {
         uint256 minFinalOut;
         uint24 buyFee;
         uint24 sellFee;
+        uint256 gasReserveInAsset;
+        uint256 minProfit;
+        uint256 deadline;
+    }
+
+    struct RouteMulti {
+        address intermediateToken;
+        address buyRouter;
+        address sellRouter;
+        uint256 minIntermediateOut;
+        uint256 minFinalOut;
+        uint24 buyFee;
+        uint24 sellFee;
+        int24 buyTickSpacing;
+        int24 sellTickSpacing;
+        bool buyStable;
+        bool sellStable;
         uint256 gasReserveInAsset;
         uint256 minProfit;
         uint256 deadline;
@@ -201,6 +240,65 @@ contract AaveV3FlashArbV4 is IUnlockCallback {
         emit RouterApproval(router, approved);
     }
 
+    function setAerodromeRouter(address router, address factory, bool approved) external onlyOwner whenIdle {
+        require(router != address(0) && router.code.length > 0, "BAD_AERODROME_ROUTER");
+        if (approved) {
+            require(factory != address(0) && factory.code.length > 0, "BAD_AERODROME_FACTORY");
+            require(IAerodromeRouter(router).defaultFactory() == factory, "AERODROME_FACTORY_MISMATCH");
+            routerFactory[router] = factory;
+            routerType[router] = 4;
+        } else {
+            delete routerFactory[router];
+            delete routerType[router];
+        }
+        approvedRouter[router] = approved;
+        emit RouterApproval(router, approved);
+    }
+
+    function setSlipstreamRouter(address router, address factory, bool approved) external onlyOwner whenIdle {
+        require(router != address(0) && router.code.length > 0, "BAD_SLIPSTREAM_ROUTER");
+        if (approved) {
+            require(factory != address(0) && factory.code.length > 0, "BAD_SLIPSTREAM_FACTORY");
+            require(ISlipstreamRouter(router).factory() == factory, "SLIPSTREAM_FACTORY_MISMATCH");
+            routerFactory[router] = factory;
+            routerType[router] = 5;
+        } else {
+            delete routerFactory[router];
+            delete routerType[router];
+        }
+        approvedRouter[router] = approved;
+        emit RouterApproval(router, approved);
+    }
+
+    // Unified route selector supports mixed V2/V3/V4/Aerodrome/Slipstream legs.
+    function startMulti(address asset, uint256 amount, RouteMulti calldata route) external onlyOwner whenIdle {
+        _validateMultiLeg(route.buyRouter, route.intermediateToken, asset, route.buyFee, route.buyTickSpacing, route.buyStable);
+        _validateMultiLeg(route.sellRouter, asset, route.intermediateToken, route.sellFee, route.sellTickSpacing, route.sellStable);
+        require(asset == wrappedNative && approvedToken[asset], "ASSET_NOT_ALLOWED");
+        require(approvedToken[route.intermediateToken] && route.intermediateToken != asset, "MID_NOT_ALLOWED");
+        require(amount > 0 && route.minIntermediateOut > 0 && route.minFinalOut > 0, "BAD_AMOUNT_OR_MIN_OUT");
+        require(route.gasReserveInAsset > 0 && route.minProfit > 0, "BAD_PROFIT_GUARD");
+        require(route.deadline >= block.timestamp && route.deadline <= block.timestamp + 120, "BAD_DEADLINE");
+        require(approvedRouter[route.buyRouter] && approvedRouter[route.sellRouter], "ROUTER_NOT_ALLOWED");
+        loanAsset = asset;
+        loanAmount = amount;
+        startingBalance = IERC20(asset).balanceOf(address(this));
+        active = true;
+        callbackSeen = false;
+        multiRouteActive = true;
+        v4RouteActive = true;
+        pool.flashLoanSimple(address(this), asset, amount, abi.encode(route), 0);
+        require(callbackSeen, "NO_CALLBACK");
+        require(IERC20(asset).balanceOf(address(this)) >= startingBalance + route.gasReserveInAsset + route.minProfit, "POST_REPAYMENT_PROFIT_CHECK");
+        require(IERC20(asset).allowance(address(this), address(pool)) == 0, "POOL_ALLOWANCE_NOT_CLEARED");
+        active = false;
+        multiRouteActive = false;
+        v4RouteActive = false;
+        loanAsset = address(0);
+        loanAmount = 0;
+        startingBalance = 0;
+    }
+
     // Legacy selector retained so the already-deployed V2 executor remains usable.
     function start(address asset, uint256 amount, RouteLegacy calldata legacy) external onlyOwner whenIdle {
         Route memory route = Route({
@@ -295,7 +393,17 @@ contract AaveV3FlashArbV4 is IUnlockCallback {
         require(asset == loanAsset && asset == wrappedNative && amount == loanAmount, "LOAN_MISMATCH");
         callbackSeen = true;
 
-        if (v4RouteActive) {
+        if (multiRouteActive) {
+            RouteMulti memory r = abi.decode(params, (RouteMulti));
+            require(approvedToken[asset] && approvedToken[r.intermediateToken], "TOKEN_REVOKED");
+            require(approvedRouter[r.buyRouter] && approvedRouter[r.sellRouter], "ROUTER_REVOKED");
+            require(r.deadline >= block.timestamp && r.deadline <= block.timestamp + 120, "ROUTE_EXPIRED");
+            _validateMultiLeg(r.buyRouter, asset, r.intermediateToken, r.buyFee, r.buyTickSpacing, r.buyStable);
+            _validateMultiLeg(r.sellRouter, r.intermediateToken, asset, r.sellFee, r.sellTickSpacing, r.sellStable);
+            uint256 midOut = _swapMulti(r.buyRouter, asset, r.intermediateToken, amount, r.minIntermediateOut, r.deadline, r.buyFee, r.buyTickSpacing, r.buyStable);
+            _swapMulti(r.sellRouter, r.intermediateToken, asset, midOut, r.minFinalOut, r.deadline, r.sellFee, r.sellTickSpacing, r.sellStable);
+            _finalizeFlashLoan(asset, r.intermediateToken, amount, premium, r.gasReserveInAsset, r.minProfit);
+        } else if (v4RouteActive) {
             RouteV4 memory r = abi.decode(params, (RouteV4));
             require(approvedToken[asset] && approvedToken[r.intermediateToken], "TOKEN_REVOKED");
             require(approvedRouter[r.buyRouter] && approvedRouter[r.sellRouter], "ROUTER_REVOKED");
@@ -337,6 +445,105 @@ contract AaveV3FlashArbV4 is IUnlockCallback {
             (fee == 10000 && tickSpacing == 200),
             "UNSUPPORTED_V4_POOL_KEY"
         );
+    }
+
+    function _validateMultiLeg(
+        address router, address tokenIn, address tokenOut,
+        uint24 fee, int24 tickSpacing, bool stable
+    ) internal view {
+        uint8 kind = routerType[router];
+        require(approvedRouter[router] && router.code.length > 0, "BAD_ROUTER");
+        if (kind == 1) {
+            address factory = IV2Router(router).factory();
+            require(factory != address(0) && factory == routerFactory[router] && factory.code.length > 0, "V2_FACTORY_MISMATCH");
+        } else if (kind == 2) {
+            require(fee == 500 || fee == 3000 || fee == 10000, "UNSUPPORTED_V3_FEE");
+            address poolAddress = IV3Factory(routerFactory[router]).getPool(tokenIn, tokenOut, fee);
+            require(poolAddress != address(0) && poolAddress.code.length > 0, "V3_POOL_MISSING");
+        } else if (kind == 3) {
+            _validateV4Leg(router, fee, tickSpacing);
+        } else if (kind == 4) {
+            address factory = routerFactory[router];
+            require(factory != address(0) && factory.code.length > 0, "AERODROME_FACTORY_MISSING");
+            address poolAddress = IAerodromeFactory(factory).getPool(tokenIn, tokenOut, stable);
+            require(poolAddress != address(0) && poolAddress.code.length > 0, "AERODROME_POOL_MISSING");
+        } else if (kind == 5) {
+            require(
+                tickSpacing == 1 || tickSpacing == 50 || tickSpacing == 100 ||
+                tickSpacing == 200 || tickSpacing == 2000,
+                "UNSUPPORTED_SLIPSTREAM_TICK_SPACING"
+            );
+            address factory = routerFactory[router];
+            require(factory != address(0) && factory.code.length > 0, "SLIPSTREAM_FACTORY_MISSING");
+            address poolAddress = ISlipstreamFactory(factory).getPool(tokenIn, tokenOut, tickSpacing);
+            require(poolAddress != address(0) && poolAddress.code.length > 0, "SLIPSTREAM_POOL_MISSING");
+        } else {
+            revert("UNKNOWN_ROUTER_TYPE");
+        }
+    }
+
+    function _swapMulti(
+        address router, address tokenIn, address tokenOut, uint256 amountIn,
+        uint256 minOut, uint256 deadline, uint24 fee, int24 tickSpacing, bool stable
+    ) internal returns (uint256) {
+        uint8 kind = routerType[router];
+        if (kind == 3) return _swapV4(tokenIn, tokenOut, amountIn, minOut, fee, tickSpacing);
+        if (kind == 4) return _swapAerodrome(router, tokenIn, tokenOut, amountIn, minOut, deadline, stable);
+        if (kind == 5) return _swapSlipstream(router, tokenIn, tokenOut, amountIn, minOut, deadline, tickSpacing);
+        return _swap(router, tokenIn, tokenOut, amountIn, minOut, deadline, fee);
+    }
+
+    function _swapAerodrome(
+        address router, address tokenIn, address tokenOut, uint256 amountIn,
+        uint256 minOut, uint256 deadline, bool stable
+    ) internal returns (uint256 actualAmountOut) {
+        address factory = routerFactory[router];
+        require(approvedRouter[router] && factory != address(0) &&
+            IAerodromeRouter(router).defaultFactory() == factory, "AERODROME_ROUTER_FACTORY_MISMATCH");
+        require(IAerodromeFactory(factory).getPool(tokenIn, tokenOut, stable) != address(0), "AERODROME_POOL_MISSING");
+        uint256 beforeIn = IERC20(tokenIn).balanceOf(address(this));
+        uint256 beforeOut = IERC20(tokenOut).balanceOf(address(this));
+        _safeApprove(tokenIn, router, amountIn);
+        IAerodromeRouter.Route[] memory routes = new IAerodromeRouter.Route[](1);
+        routes[0] = IAerodromeRouter.Route(tokenIn, tokenOut, stable, factory);
+        uint256[] memory amounts = IAerodromeRouter(router).swapExactTokensForTokens(
+            amountIn, minOut, routes, address(this), deadline
+        );
+        require(amounts.length == 2 && amounts[1] >= minOut, "BAD_AERODROME_SWAP_RESULT");
+        uint256 afterIn = IERC20(tokenIn).balanceOf(address(this));
+        uint256 afterOut = IERC20(tokenOut).balanceOf(address(this));
+        require(beforeIn >= afterIn && beforeIn - afterIn == amountIn, "AERODROME_INPUT_DELTA");
+        require(afterOut >= beforeOut, "AERODROME_OUTPUT_DELTA");
+        actualAmountOut = afterOut - beforeOut;
+        require(actualAmountOut >= minOut, "AERODROME_MIN_OUT");
+        _safeApprove(tokenIn, router, 0);
+    }
+
+    function _swapSlipstream(
+        address router, address tokenIn, address tokenOut, uint256 amountIn,
+        uint256 minOut, uint256 deadline, int24 tickSpacing
+    ) internal returns (uint256 actualAmountOut) {
+        address factory = routerFactory[router];
+        require(approvedRouter[router] && factory != address(0) &&
+            ISlipstreamRouter(router).factory() == factory, "SLIPSTREAM_ROUTER_FACTORY_MISMATCH");
+        require(ISlipstreamFactory(factory).getPool(tokenIn, tokenOut, tickSpacing) != address(0), "SLIPSTREAM_POOL_MISSING");
+        uint256 beforeIn = IERC20(tokenIn).balanceOf(address(this));
+        uint256 beforeOut = IERC20(tokenOut).balanceOf(address(this));
+        _safeApprove(tokenIn, router, amountIn);
+        uint256 reportedOut = ISlipstreamRouter(router).exactInputSingle(
+            ISlipstreamRouter.ExactInputSingleParams({
+                tokenIn: tokenIn, tokenOut: tokenOut, tickSpacing: tickSpacing,
+                recipient: address(this), deadline: deadline, amountIn: amountIn,
+                amountOutMinimum: minOut, sqrtPriceLimitX96: 0
+            })
+        );
+        uint256 afterIn = IERC20(tokenIn).balanceOf(address(this));
+        uint256 afterOut = IERC20(tokenOut).balanceOf(address(this));
+        require(beforeIn >= afterIn && beforeIn - afterIn == amountIn, "SLIPSTREAM_INPUT_DELTA");
+        require(afterOut >= beforeOut, "SLIPSTREAM_OUTPUT_DELTA");
+        actualAmountOut = afterOut - beforeOut;
+        require(reportedOut == actualAmountOut && actualAmountOut >= minOut, "SLIPSTREAM_OUTPUT_MISMATCH");
+        _safeApprove(tokenIn, router, 0);
     }
 
     function _swapAny(
