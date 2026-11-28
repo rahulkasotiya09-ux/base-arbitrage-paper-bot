@@ -50,11 +50,17 @@ async function main() {
   if (Number(network.chainId) !== CHAIN_ID) throw new Error("Discovery RPC is not Base Mainnet");
 
   const profiles = await getJson("https://api.dexscreener.com/token-profiles/latest/v1");
-  const candidates = (Array.isArray(profiles) ? profiles : [])
-    .filter(item => item.chainId === "base" && ethers.isAddress(item.tokenAddress))
+  const profileList = Array.isArray(profiles) ? profiles : [];
+  const candidates = profileList
+    .filter(item => String(item.chainId ?? "").toLowerCase() === "base" && ethers.isAddress(item.tokenAddress))
     .slice(0, MAX_PROFILES);
 
   let rejectedSecurity = 0;
+  let pairRequests = 0;
+  let pairRequestErrors = 0;
+  let pairsReturned = 0;
+  let noEligiblePair = 0;
+  let metadataFailures = 0;
   const found = [];
 
   async function inspectProfile(profile) {
@@ -63,27 +69,41 @@ async function main() {
     if (known.has(key)) return null;
 
     try {
+      pairRequests++;
       const pairs = await getJson(`https://api.dexscreener.com/token-pairs/v1/base/${address}`);
-      const eligible = (Array.isArray(pairs) ? pairs : [])
-        .filter(pair =>
-          pair.chainId === "base" &&
-          pair.baseToken?.address?.toLowerCase() === key &&
-          ethers.isAddress(pair.quoteToken?.address) &&
-          pair.quoteToken.address.toLowerCase() !== key &&
+      const pairList = Array.isArray(pairs) ? pairs : [];
+      pairsReturned += pairList.length;
+      const eligible = pairList
+        .filter(pair => {
+          const baseAddress = String(pair.baseToken?.address ?? "").toLowerCase();
+          const quoteAddress = String(pair.quoteToken?.address ?? "").toLowerCase();
+          const tokenIsInPair = baseAddress === key || quoteAddress === key;
+          const otherAddress = baseAddress === key ? quoteAddress : baseAddress;
+          const createdAt = Number(pair.pairCreatedAt ?? 0);
+          return String(pair.chainId ?? "").toLowerCase() === "base" &&
+          tokenIsInPair &&
+          ethers.isAddress(otherAddress) &&
+          otherAddress !== key &&
           Number(pair.liquidity?.usd ?? 0) >= MIN_LIQUIDITY_USD &&
           Number(pair.volume?.h24 ?? 0) >= MIN_VOLUME_24H_USD &&
-          Number(pair.pairCreatedAt ?? 0) > 0 &&
-          Date.now() - Number(pair.pairCreatedAt) >= MIN_POOL_AGE_MS
-        )
+          createdAt > 0 &&
+          Date.now() - createdAt >= MIN_POOL_AGE_MS;
+        })
         .sort((a, b) => Number(b.liquidity?.usd ?? 0) - Number(a.liquidity?.usd ?? 0));
 
-      if (!eligible.length) return null;
+      if (!eligible.length) {
+        noEligiblePair++;
+        return null;
+      }
 
       const [meta, security] = await Promise.all([
         metadata(address),
         verifyNewTokenSecurity(address).catch(error => ({ passed: false, reason: error.message }))
       ]);
-      if (!meta) return null;
+      if (!meta) {
+        metadataFailures++;
+        return null;
+      }
       if (!security.passed) {
         rejectedSecurity++;
         console.warn(`Security rejected ${address}: ${security.reason}`);
@@ -108,6 +128,7 @@ async function main() {
         safetyChecks: security.checks
       };
     } catch (error) {
+      pairRequestErrors++;
       console.warn(`Skipping ${address}: ${error.message}`);
       return null;
     }
@@ -141,6 +162,16 @@ async function main() {
     rejectedSecurity
   }, null, 2));
 
+  console.log(`DexScreener discovery diagnostics: ${JSON.stringify({
+    profilesReturned: profileList.length,
+    baseProfiles: candidates.length,
+    maxProfiles: MAX_PROFILES,
+    pairRequests,
+    pairRequestErrors,
+    pairsReturned,
+    noEligiblePair,
+    metadataFailures
+  })}`);
   console.log(`New Base token discovery: ${tokens.length} security-passed token(s); ${rejectedSecurity} rejected.`);
   for (const token of tokens.slice(0, 20)) {
     console.log(`${token.symbol} ${token.address} | liq=$${token.liquidityUsd} | vol24h=$${token.volume24hUsd} | age=${token.poolAgeMinutes}m | GoPlus=PASS`);
