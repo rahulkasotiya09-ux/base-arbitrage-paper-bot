@@ -47,8 +47,15 @@ const V3_QUOTER_ABI = [
 const V4_QUOTER_ABI = [
   "function quoteExactInputSingle(((address currency0,address currency1,uint24 fee,int24 tickSpacing,address hooks) poolKey,bool zeroForOne,uint128 exactAmount,bytes hookData) params) returns (uint256 amountOut,uint256 gasEstimate)"
 ];
-const V4_STATE_VIEW_ABI = ["function getSlot0(bytes32 poolId) view returns (uint160 sqrtPriceX96,int24 tick,uint24 protocolFee,uint24 lpFee)"];
+const V4_STATE_VIEW_ABI = [
+  "function getSlot0(bytes32 poolId) view returns (uint160 sqrtPriceX96,int24 tick,uint24 protocolFee,uint24 lpFee)",
+  "function getLiquidity(bytes32 poolId) view returns (uint128 liquidity)"
+];
 const V4_POOL_ID_ABI = ethers.AbiCoder.defaultAbiCoder();
+// Cache immutable-per-block V4 pool state so parallel routes do not hammer StateView.
+const v4PoolStateCache = new Map();
+const v4PreflightStats = { checked: 0, uninitialized: 0, zeroActiveLiquidity: 0, initializedWithLiquidity: 0 };
+const quoteFailureSamples = [];
 const AERODROME_ROUTER_ABI = [
   "function getAmountsOut(uint256 amountIn,tuple(address from,address to,bool stable,address factory)[] routes) view returns (uint256[] amounts)"
 ];
@@ -217,8 +224,30 @@ async function quote(venue, tokenIn, tokenOut, amountIn, fee, blockTag) {
           ["address", "address", "uint24", "int24", "address"],
           [currency0, currency1, fee.fee, fee.tickSpacing, ethers.ZeroAddress]
         ));
-        const slot0 = await quoteContracts[providerIndex].get(`${venue.name}:stateView`).getSlot0(poolId, { blockTag });
-        if (slot0.sqrtPriceX96 === 0n) throw new Error("V4_POOL_NOT_INITIALIZED");
+        const stateKey = `${providerIndex}:${poolId}:${blockTag}`;
+        let statePromise = v4PoolStateCache.get(stateKey);
+        if (!statePromise) {
+          const stateView = quoteContracts[providerIndex].get(`${venue.name}:stateView`);
+          statePromise = Promise.all([
+            stateView.getSlot0(poolId, { blockTag }),
+            stateView.getLiquidity(poolId, { blockTag })
+          ]).then(([slot0, liquidity]) => ({ slot0, liquidity }));
+          v4PoolStateCache.set(stateKey, statePromise);
+          // Do not retain a rejected RPC promise; the next endpoint must be able to retry.
+          statePromise.catch(() => v4PoolStateCache.delete(stateKey));
+        }
+        const { slot0, liquidity } = await statePromise;
+        v4PreflightStats.checked++;
+        if (slot0.sqrtPriceX96 === 0n) {
+          v4PreflightStats.uninitialized++;
+          throw new Error("V4_POOL_NOT_INITIALIZED");
+        }
+        // A zero active-liquidity pool cannot produce an exact-input swap at this tick.
+        if (liquidity === 0n) {
+          v4PreflightStats.zeroActiveLiquidity++;
+          throw new Error("V4_POOL_ZERO_ACTIVE_LIQUIDITY");
+        }
+        v4PreflightStats.initializedWithLiquidity++;
         const params = { poolKey, zeroForOne: a < b, exactAmount: amountIn, hookData: "0x" };
         const q = await contract.quoteExactInputSingle.staticCall(params, { blockTag });
         result = q.amountOut ?? q[0];
@@ -251,6 +280,16 @@ async function quote(venue, tokenIn, tokenOut, amountIn, fee, blockTag) {
       lastError = error;
       const kind = classifyQuoteError(error);
       endpointStats.failureKinds[kind] = (endpointStats.failureKinds[kind] ?? 0) + 1;
+      if (venue.type === "v4" && quoteFailureSamples.length < 16) {
+        const rawData = error?.data ?? error?.info?.error?.data ?? error?.error?.data ?? null;
+        quoteFailureSamples.push({
+          venue: venue.name, tokenIn: tokenIn.symbol ?? tokenIn.address,
+          tokenOut: tokenOut.symbol ?? tokenOut.address, fee: fee?.fee ?? fee,
+          tickSpacing: fee?.tickSpacing ?? null, provider: endpointStats.endpoint,
+          kind, message: String(error?.shortMessage ?? error?.reason ?? error?.message ?? error).slice(0, 240),
+          revertData: typeof rawData === "string" ? rawData.slice(0, 138) : null
+        });
+      }
       if (kind === "rpc_transient" || kind === "rpc_rate_limited") {
         endpointStats.consecutiveTransientFailures++;
         if (endpointStats.consecutiveTransientFailures >= 3) {
@@ -283,7 +322,7 @@ function classifyQuoteError(error) {
   ].filter(Boolean).join(" ").toLowerCase();
   if (/429|rate.?limit|too many requests|25\/second|request limit/.test(message)) return "rpc_rate_limited";
   if (/timeout|timed out|etimedout|econnreset|econnrefused|eai_again|socket hang up|failed to fetch|network_error|server_error|502|503|504|520|522|524/.test(message)) return "rpc_transient";
-  if (/v4_pool_not_initialized|poolnotinitialized|pool not initialized|pool does not exist|pool not found|insufficient liquidity|insufficient_output|no liquidity/.test(message)) return "no_pool_or_liquidity";
+  if (/v4_pool_not_initialized|poolnotinitialized|pool not initialized|pool does not exist|pool not found|insufficient liquidity|insufficient_output|no liquidity|zero_active_liquidity/.test(message)) return "no_pool_or_liquidity";
   // A generic eth_call revert can be endpoint-specific or have missing revert
   // data. Retry one alternate RPC before treating it as a genuine no-pool result.
   if (/call_exception|execution reverted|missing revert data/.test(message)) return "contract_revert";
@@ -653,7 +692,7 @@ async function main() {
     gasLimitEstimate: cfg.gasLimitEstimate,
     stats: { ...stats, feeEstimateFailureKinds, feeEstimateFailureSamples,
       quoteFailureKinds, quoteVenueStats, quoteRetryStats, quoteEndpointStats,
-      quoteRpcEndpoints: quoteProviders.length },
+      v4PreflightStats, quoteFailureSamples, quoteRpcEndpoints: quoteProviders.length },
     candidates: rows,
     discoveryOnlyCandidates: discoveryOnlyRows
   };
@@ -670,7 +709,8 @@ async function main() {
   console.log(`Candidate status: ${executorCompatibleCount} executor-compatible pending validation; ${discoveryOnlyCount} discovery-only (unsupported venue combinations or three-hop routes).`);
   for (const r of rows.slice(0, 20)) console.log(r.routeHops === 3 ? (r.route.join(" -> ") + " | " + r.amountIn + " WETH | net=" + r.estimatedNetProfit + " (discovery-only)") : (r.base + " " + r.amountIn + " | " + r.buyVenue + " -> " + r.sellVenue + " | net=" + r.estimatedNetProfit));
   console.log("Scan diagnostics:", JSON.stringify({ ...stats, feeEstimateFailureKinds, feeEstimateFailureSamples,
-    quoteFailureKinds, quoteVenueStats, quoteRetryStats, quoteEndpointStats, quoteRpcEndpoints: quoteProviders.length }));
+    quoteFailureKinds, quoteVenueStats, quoteRetryStats, quoteEndpointStats,
+    v4PreflightStats, quoteFailureSamples, quoteRpcEndpoints: quoteProviders.length }));
   if (!rows.length) console.log("No executor-compatible candidates passed Aave premium, estimated L2 + L1 fees, and minimum-profit filters.");
 }
 main().catch(e => { console.error(e); process.exitCode = 1; });
