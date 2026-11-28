@@ -131,6 +131,12 @@ async function main() {
         sellVenue.router.toLowerCase() !== String(x.sellRouter).toLowerCase()) {
       return false;
     }
+    const [tokenAllowed, buyAllowed, sellAllowed] = await Promise.all([
+      executor.approvedToken(ethers.getAddress(x.intermediateAddress ?? cfg.tokens[x.intermediate]?.address ?? ethers.ZeroAddress)).catch(() => false),
+      executor.approvedRouter(buyVenue.router).catch(() => false),
+      executor.approvedRouter(sellVenue.router).catch(() => false)
+    ]);
+    if (!tokenAllowed || !buyAllowed || !sellAllowed) return false;
     for (const venue of [buyVenue, sellVenue]) {
       const expectedType = venue.type === "v2" ? 1 : venue.type === "v3" ? 2 : 0;
       if (!expectedType || Number(await executor.routerType(venue.router).catch(() => 0n)) !== expectedType) {
