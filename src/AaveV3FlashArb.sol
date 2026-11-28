@@ -43,7 +43,7 @@ interface IV3Factory {
 interface IV3SwapRouter {
     struct ExactInputSingleParams {
         address tokenIn; address tokenOut; uint24 fee; address recipient;
-        uint256 deadline; uint256 amountIn; uint256 amountOutMinimum; uint160 sqrtPriceLimitX96;
+        uint256 amountIn; uint256 amountOutMinimum; uint160 sqrtPriceLimitX96;
     }
     function exactInputSingle(ExactInputSingleParams calldata params) external payable returns (uint256 amountOut);
 }
@@ -259,7 +259,7 @@ contract AaveV3FlashArb {
             uint256 amountOut = IV3SwapRouter(router).exactInputSingle(
                 IV3SwapRouter.ExactInputSingleParams({
                     tokenIn: tokenIn, tokenOut: tokenOut, fee: fee, recipient: address(this),
-                    deadline: deadline, amountIn: amountIn, amountOutMinimum: minOut,
+                    amountIn: amountIn, amountOutMinimum: minOut,
                     sqrtPriceLimitX96: 0
                 })
             );
