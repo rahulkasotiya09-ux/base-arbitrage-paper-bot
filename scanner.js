@@ -18,6 +18,7 @@ const scannerExecutor = process.env.EXECUTOR_ADDRESS && scannerWallet ? new ethe
     "function start(address asset,uint256 amount,(address intermediateToken,address buyRouter,address sellRouter,uint256 minIntermediateOut,uint256 minFinalOut,uint256 gasReserveInAsset,uint256 minProfit,uint256 deadline) route)",
     "function startV3(address asset,uint256 amount,(address intermediateToken,address buyRouter,address sellRouter,uint256 minIntermediateOut,uint256 minFinalOut,uint24 buyFee,uint24 sellFee,uint256 gasReserveInAsset,uint256 minProfit,uint256 deadline) route)",
     "function startV4(address asset,uint256 amount,(address intermediateToken,address buyRouter,address sellRouter,uint256 minIntermediateOut,uint256 minFinalOut,uint24 buyFee,uint24 sellFee,int24 buyTickSpacing,int24 sellTickSpacing,uint256 gasReserveInAsset,uint256 minProfit,uint256 deadline) route)",
+    "function startMulti(address asset,uint256 amount,(address intermediateToken,address buyRouter,address sellRouter,uint256 minIntermediateOut,uint256 minFinalOut,uint24 buyFee,uint24 sellFee,int24 buyTickSpacing,int24 sellTickSpacing,bool buyStable,bool sellStable,uint256 gasReserveInAsset,uint256 minProfit,uint256 deadline) route)",
     "function poolManager() view returns (address)",
     "function routerType(address) view returns (uint8)",
     "function routerFactory(address) view returns (address)",
@@ -88,8 +89,10 @@ async function loadScannerMinimumProfit() {
   scannerMinimumProfitWeth = ceilDiv(BigInt(cfg.minProfitUsdCents ?? 1) * 10n ** 18n * 10n ** BigInt(decimals), answer * 100n);
 }
 async function estimateCandidateExecutionFees(c, amountIn, midOut, baseOut, blockTag, feeData) {
-  if (!["v2","v3","v4"].includes(c.buy.type) || !["v2","v3","v4"].includes(c.sell.type))
+  if (!["v2","v3","v4","aerodrome","slipstream"].includes(c.buy.type) ||
+      !["v2","v3","v4","aerodrome","slipstream"].includes(c.sell.type))
     throw new Error("Discovery-only route has no matching executor");
+  const hasMulti = ["aerodrome","slipstream"].includes(c.buy.type) || ["aerodrome","slipstream"].includes(c.sell.type);
   const hasV4 = c.buy.type === "v4" || c.sell.type === "v4";
   const hasV3 = c.buy.type === "v3" || c.sell.type === "v3";
   const buyFee = Number(c.buyFee?.fee ?? c.buyFee ?? 0);
@@ -99,16 +102,20 @@ async function estimateCandidateExecutionFees(c, amountIn, midOut, baseOut, bloc
     minIntermediateOut: midOut * (10000n-SCANNER_SLIPPAGE_BPS)/10000n,
     minFinalOut: baseOut * (10000n-SCANNER_SLIPPAGE_BPS)/10000n,
     buyFee, sellFee,
-    buyTickSpacing: Number(c.buyFee?.tickSpacing ?? 0),
-    sellTickSpacing: Number(c.sellFee?.tickSpacing ?? 0),
+    buyTickSpacing: Number(c.buy.type === "slipstream" ? c.buyFee : (c.buyFee?.tickSpacing ?? 0)),
+    sellTickSpacing: Number(c.sell.type === "slipstream" ? c.sellFee : (c.sellFee?.tickSpacing ?? 0)),
+    buyStable: c.buy.type === "aerodrome" && Boolean(c.buyFee),
+    sellStable: c.sell.type === "aerodrome" && Boolean(c.sellFee),
     gasReserveInAsset: 1n, minProfit: scannerMinimumProfitWeth,
     deadline: BigInt(Math.floor(Date.now()/1000)+45)
   };
-  const populate = r => hasV4
-    ? scannerExecutor.startV4.populateTransaction(cfg.tokens.WETH.address, amountIn, r)
-    : hasV3
-      ? scannerExecutor.startV3.populateTransaction(cfg.tokens.WETH.address, amountIn, r)
-      : scannerExecutor.start.populateTransaction(cfg.tokens.WETH.address, amountIn, r);
+  const populate = r => hasMulti
+    ? scannerExecutor.startMulti.populateTransaction(cfg.tokens.WETH.address, amountIn, r)
+    : hasV4
+      ? scannerExecutor.startV4.populateTransaction(cfg.tokens.WETH.address, amountIn, r)
+      : hasV3
+        ? scannerExecutor.startV3.populateTransaction(cfg.tokens.WETH.address, amountIn, r)
+        : scannerExecutor.start.populateTransaction(cfg.tokens.WETH.address, amountIn, r);
   const feeFields = feeData.maxFeePerGas
     ? {maxFeePerGas:feeData.maxFeePerGas,maxPriorityFeePerGas:feeData.maxPriorityFeePerGas ?? 0n}
     : {gasPrice:feeData.gasPrice};
@@ -429,7 +436,7 @@ async function main() {
   // This is diagnostic only: it never changes an allowlist or relaxes a guard.
   if (scannerExecutor) {
     for (const venue of scanVenues) {
-      if (!["v2", "v3", "v4"].includes(venue.type)) {
+      if (!["v2", "v3", "v4", "aerodrome", "slipstream"].includes(venue.type)) {
         executionVenueStatus.set(venue.name, ["venue_type_not_supported_by_executor"]);
         continue;
       }
@@ -437,14 +444,15 @@ async function main() {
       try {
         const allowed = await scannerExecutor.approvedRouter(venue.router);
         if (!allowed) reasons.push("router_not_on_executor_allowlist");
-        if (venue.type === "v2" || venue.type === "v3") {
+        if (["v2", "v3", "aerodrome", "slipstream"].includes(venue.type)) {
           const [boundFactory, routerType] = await Promise.all([
             scannerExecutor.routerFactory(venue.router), scannerExecutor.routerType(venue.router)
           ]);
+          const expectedType = ({v2:1,v3:2,aerodrome:4,slipstream:5})[venue.type];
           if (!venue.factory || boundFactory.toLowerCase() !== venue.factory.toLowerCase())
             reasons.push("executor_router_factory_binding_mismatch");
-          if (venue.type === "v3" && Number(routerType) !== 2)
-            reasons.push("deployed_executor_router_type_is_not_v3");
+          if (Number(routerType) !== expectedType)
+            reasons.push("deployed_executor_router_type_mismatch");
         } else if (!v4ExecutionEnabled) reasons.push("v4_execution_disabled");
       } catch (error) {
         reasons.push("executor_preflight_rpc_or_abi_error");
@@ -583,12 +591,13 @@ async function main() {
       ...(executionVenueStatus.get(sell.name) ?? ["executor_venue_preflight_missing"])
     ];
     const executorCompatible = compatibilityReasons.length === 0 &&
-      ["v2", "v3", "v4"].includes(buy.type) && ["v2", "v3", "v4"].includes(sell.type);
+      ["v2", "v3", "v4", "aerodrome", "slipstream"].includes(buy.type) &&
+      ["v2", "v3", "v4", "aerodrome", "slipstream"].includes(sell.type);
     if (!executorCompatible) {
       const uniqueReasons = [...new Set([
         ...compatibilityReasons,
-        ...(!["v2", "v3", "v4"].includes(buy.type) ? ["buy_venue_type_" + buy.type + "_unsupported"] : []),
-        ...(!["v2", "v3", "v4"].includes(sell.type) ? ["sell_venue_type_" + sell.type + "_unsupported"] : [])
+        ...(!["v2", "v3", "v4", "aerodrome", "slipstream"].includes(buy.type) ? ["buy_venue_type_" + buy.type + "_unsupported"] : []),
+        ...(!["v2", "v3", "v4", "aerodrome", "slipstream"].includes(sell.type) ? ["sell_venue_type_" + sell.type + "_unsupported"] : [])
       ])];
       const row = {
         block, base: amounts.token, routeHops: 2, route: ["WETH", midName, "WETH"],
@@ -680,7 +689,7 @@ async function main() {
   const tripleTokens = Object.entries(cfg.tokens)
     .filter(([name, token]) => name !== "WETH" && token.address.toLowerCase() !== cfg.tokens.WETH.address.toLowerCase())
     .slice(0, 3);
-  const tripleVenues = scanVenues.filter(v => ["v2", "v3", "aerodrome"].includes(v.type));
+  const tripleVenues = scanVenues.filter(v => ["v2", "v3", "v4", "aerodrome", "slipstream"].includes(v.type));
   const tripleTasks = [];
   const tripleReserveBalance = await new ethers.Contract(
     cfg.tokens.WETH.address, AAVE_RESERVE_ABI, provider
