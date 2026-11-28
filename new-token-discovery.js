@@ -1,4 +1,5 @@
 import "dotenv/config";
+import "node:fs";
 import fs from "node:fs";
 import { ethers } from "ethers";
 import { verifyNewTokenSecurity } from "./token-security.js";
@@ -9,8 +10,9 @@ const CHAIN_ID = 8453;
 const MIN_LIQUIDITY_USD = 1000;
 const MIN_VOLUME_24H_USD = 500;
 const MIN_POOL_AGE_MS = 60000;
-const MAX_PROFILES = 200;
+const MAX_CANDIDATES = 200;
 const DISCOVERY_CONCURRENCY = 5;
+const GECKO_NEW_POOL_PAGES = 3;
 const known = new Set([
   "0x4200000000000000000000000000000000000006",
   "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
@@ -24,9 +26,9 @@ const known = new Set([
 ]);
 const provider = new ethers.JsonRpcProvider(RPC, CHAIN_ID);
 
-async function getJson(url) {
-  const response = await fetch(url, { signal: AbortSignal.timeout(12000) });
-  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+async function getJson(url, headers = {}) {
+  const response = await fetch(url, { headers, signal: AbortSignal.timeout(12000) });
+  if (!response.ok) throw new Error("HTTP " + response.status + " from " + url);
   return response.json();
 }
 
@@ -45,16 +47,102 @@ async function metadata(address) {
   }
 }
 
+function addCandidate(map, address, source) {
+  if (!ethers.isAddress(address)) return;
+  const normalized = ethers.getAddress(address);
+  const key = normalized.toLowerCase();
+  if (known.has(key)) return;
+  if (!map.has(key)) map.set(key, { address: normalized, sources: new Set() });
+  map.get(key).sources.add(source);
+}
+
 async function main() {
   const network = await provider.getNetwork();
   if (Number(network.chainId) !== CHAIN_ID) throw new Error("Discovery RPC is not Base Mainnet");
 
-  const profiles = await getJson("https://api.dexscreener.com/token-profiles/latest/v1");
-  const profileList = Array.isArray(profiles) ? profiles : [];
-  const candidates = profileList
-    .filter(item => String(item.chainId ?? "").toLowerCase() === "base" && ethers.isAddress(item.tokenAddress))
-    .slice(0, MAX_PROFILES);
+  const candidateMap = new Map();
+  const diagnostics = {
+    profilesReturned: 0,
+    profileBaseCandidates: 0,
+    latestBoostsReturned: 0,
+    topBoostsReturned: 0,
+    takeoverProfilesReturned: 0,
+    geckoPagesSucceeded: 0,
+    geckoPoolsReturned: 0,
+    geckoBasePools: 0,
+    geckoPoolsPassingMarketFilters: 0,
+    geckoTokenCandidates: 0
+  };
 
+  // DexScreener profile/boost lists are global promotional feeds, not complete chain-wide token feeds.
+  const feeds = [
+    ["profiles", "https://api.dexscreener.com/token-profiles/latest/v1"],
+    ["latestBoosts", "https://api.dexscreener.com/token-boosts/latest/v1"],
+    ["topBoosts", "https://api.dexscreener.com/token-boosts/top/v1"],
+    ["takeovers", "https://api.dexscreener.com/community-takeovers/latest/v1"]
+  ];
+
+  await Promise.all(feeds.map(async ([source, url]) => {
+    try {
+      const response = await getJson(url);
+      const list = Array.isArray(response) ? response : [];
+      if (source === "profiles") diagnostics.profilesReturned = list.length;
+      if (source === "latestBoosts") diagnostics.latestBoostsReturned = list.length;
+      if (source === "topBoosts") diagnostics.topBoostsReturned = list.length;
+      if (source === "takeovers") diagnostics.takeoverProfilesReturned = list.length;
+
+      for (const item of list) {
+        if (String(item.chainId ?? "").toLowerCase() !== "base") continue;
+        addCandidate(candidateMap, item.tokenAddress, source);
+      }
+    } catch (error) {
+      console.warn("Discovery feed " + source + " unavailable: " + error.message);
+    }
+  });
+  diagnostics.profileBaseCandidates = [...candidateMap.values()]
+    .filter(item => item.sources.has("profiles")).length;
+
+  // GeckoTerminal's Base new-pools feed discovers actual newly created pools,
+  // rather than relying only on DexScreener's small global promotional lists.
+  const geckoHeaders = { Accept: "application/json;version=20230203" };
+  for (let page = 1; page <= GECKO_NEW_POOL_PAGES; page++) {
+    try {
+      const url = "https://api.geckoterminal.com/api/v2/networks/base/new_pools?include=base_token%2Cquote_token%2Cdex&page=" + page;
+      const response = await getJson(url, geckoHeaders);
+      diagnostics.geckoPagesSucceeded++;
+      const pools = Array.isArray(response.data) ? response.data : [];
+      diagnostics.geckoPoolsReturned += pools.length;
+      const included = new Map((Array.isArray(response.included) ? response.included : [])
+        .filter(item => item.type === "token")
+        .map(item => [item.id, item.attributes ?? {}]));
+
+      for (const pool of pools) {
+        const attrs = pool.attributes ?? {};
+        const baseId = pool.relationships?.base_token?.data?.id;
+        const quoteId = pool.relationships?.quote_token?.data?.id;
+        const baseToken = included.get(baseId);
+        const quoteToken = included.get(quoteId);
+        const createdAt = Date.parse(attrs.pool_created_at ?? "");
+        const ageMs = Date.now() - createdAt;
+        const liquidity = Number(attrs.reserve_in_usd ?? 0);
+        const volume24h = Number(attrs.volume_usd?.h24 ?? 0);
+
+        if (String(pool.id ?? "").toLowerCase().startsWith("base_")) diagnostics.geckoBasePools++;
+        if (!Number.isFinite(createdAt) || ageMs < MIN_POOL_AGE_MS ||
+            liquidity < MIN_LIQUIDITY_USD || volume24h < MIN_VOLUME_24H_USD) continue;
+
+        diagnostics.geckoPoolsPassingMarketFilters++;
+        const before = candidateMap.size;
+        if (baseToken?.address) addCandidate(candidateMap, baseToken.address, "geckoNewPools");
+        if (quoteToken?.address) addCandidate(candidateMap, quoteToken.address, "geckoNewPools");
+        diagnostics.geckoTokenCandidates += candidateMap.size - before;
+      }
+    } catch (error) {
+      console.warn("GeckoTerminal Base new-pools page " + page + " unavailable: " + error.message);
+    }
+  }
+
+  const candidates = [...candidateMap.values()].slice(0, MAX_CANDIDATES);
   let rejectedSecurity = 0;
   let pairRequests = 0;
   let pairRequestErrors = 0;
@@ -63,14 +151,13 @@ async function main() {
   let metadataFailures = 0;
   const found = [];
 
-  async function inspectProfile(profile) {
-    const address = ethers.getAddress(profile.tokenAddress);
+  async function inspectCandidate(candidate) {
+    const address = candidate.address;
     const key = address.toLowerCase();
-    if (known.has(key)) return null;
 
     try {
       pairRequests++;
-      const pairs = await getJson(`https://api.dexscreener.com/token-pairs/v1/base/${address}`);
+      const pairs = await getJson("https://api.dexscreener.com/token-pairs/v1/base/" + address);
       const pairList = Array.isArray(pairs) ? pairs : [];
       pairsReturned += pairList.length;
       const eligible = pairList
@@ -81,13 +168,13 @@ async function main() {
           const otherAddress = baseAddress === key ? quoteAddress : baseAddress;
           const createdAt = Number(pair.pairCreatedAt ?? 0);
           return String(pair.chainId ?? "").toLowerCase() === "base" &&
-          tokenIsInPair &&
-          ethers.isAddress(otherAddress) &&
-          otherAddress !== key &&
-          Number(pair.liquidity?.usd ?? 0) >= MIN_LIQUIDITY_USD &&
-          Number(pair.volume?.h24 ?? 0) >= MIN_VOLUME_24H_USD &&
-          createdAt > 0 &&
-          Date.now() - createdAt >= MIN_POOL_AGE_MS;
+            tokenIsInPair &&
+            ethers.isAddress(otherAddress) &&
+            otherAddress !== key &&
+            Number(pair.liquidity?.usd ?? 0) >= MIN_LIQUIDITY_USD &&
+            Number(pair.volume?.h24 ?? 0) >= MIN_VOLUME_24H_USD &&
+            createdAt > 0 &&
+            Date.now() - createdAt >= MIN_POOL_AGE_MS;
         })
         .sort((a, b) => Number(b.liquidity?.usd ?? 0) - Number(a.liquidity?.usd ?? 0));
 
@@ -106,7 +193,7 @@ async function main() {
       }
       if (!security.passed) {
         rejectedSecurity++;
-        console.warn(`Security rejected ${address}: ${security.reason}`);
+        console.warn("Security rejected " + address + ": " + security.reason);
         return null;
       }
 
@@ -121,6 +208,7 @@ async function main() {
         volume24hUsd: Number(pair.volume.h24),
         poolAgeMinutes: Math.floor((Date.now() - Number(pair.pairCreatedAt)) / 60000),
         priceUsd: pair.priceUsd ?? null,
+        discoverySources: [...candidate.sources],
         discoveryOnly: true,
         safetyPassed: true,
         safetyProvider: security.provider,
@@ -129,7 +217,7 @@ async function main() {
       };
     } catch (error) {
       pairRequestErrors++;
-      console.warn(`Skipping ${address}: ${error.message}`);
+      console.warn("Skipping " + address + ": " + error.message);
       return null;
     }
   }
@@ -139,7 +227,7 @@ async function main() {
     while (true) {
       const index = nextIndex++;
       if (index >= candidates.length) return;
-      const token = await inspectProfile(candidates[index]);
+      const token = await inspectCandidate(candidates[index]);
       if (token) found.push(token);
     }
   }
@@ -156,25 +244,33 @@ async function main() {
       minVolume24hUsd: MIN_VOLUME_24H_USD,
       minPoolAgeMinutes: MIN_POOL_AGE_MS / 60000
     },
+    discoverySources: [
+      "DexScreener latest profiles",
+      "DexScreener latest and top boosts",
+      "DexScreener community takeovers",
+      "GeckoTerminal Base new pools (first " + GECKO_NEW_POOL_PAGES + " pages)"
+    ],
     securityPolicy: "GoPlus open-source DEX token, explicit zero buy/sell/transfer tax, and all required risk flags explicitly zero. Unknown data blocks execution.",
     executionEnabled: true,
     tokens,
     rejectedSecurity
   }, null, 2));
 
-  console.log(`DexScreener discovery diagnostics: ${JSON.stringify({
-    profilesReturned: profileList.length,
-    baseProfiles: candidates.length,
-    maxProfiles: MAX_PROFILES,
+  console.log("Token discovery source diagnostics: " + JSON.stringify({
+    ...diagnostics,
+    uniqueCandidates: candidates.length,
+    maxCandidates: MAX_CANDIDATES,
     pairRequests,
     pairRequestErrors,
     pairsReturned,
     noEligiblePair,
     metadataFailures
-  })}`);
-  console.log(`New Base token discovery: ${tokens.length} security-passed token(s); ${rejectedSecurity} rejected.`);
+  }));
+  console.log("New Base token discovery: " + tokens.length + " security-passed token(s); " + rejectedSecurity + " rejected.");
   for (const token of tokens.slice(0, 20)) {
-    console.log(`${token.symbol} ${token.address} | liq=$${token.liquidityUsd} | vol24h=$${token.volume24hUsd} | age=${token.poolAgeMinutes}m | GoPlus=PASS`);
+    console.log(token.symbol + " " + token.address + " | liq=$" + token.liquidityUsd +
+      " | vol24h=$" + token.volume24hUsd + " | age=" + token.poolAgeMinutes +
+      "m | sources=" + token.discoverySources.join(",") + " | GoPlus=PASS");
   }
 }
 
