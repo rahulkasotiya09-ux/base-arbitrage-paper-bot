@@ -1,6 +1,50 @@
 import { ethers } from "ethers";
 
 const API = "https://api.gopluslabs.io/api/v1/token_security/8453";
+
+let nextGoPlusRequestAt = 0;
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+async function getGoPlusPayload(url) {
+  let lastError;
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const now = Date.now();
+    const wait = Math.max(0, nextGoPlusRequestAt - now);
+    nextGoPlusRequestAt = Math.max(now, nextGoPlusRequestAt) + 1500;
+    if (wait) await sleep(wait);
+
+    try {
+      const response = await fetch(url, { signal: AbortSignal.timeout(12000) });
+      if (!response.ok) {
+        const retryable = response.status === 429 || response.status >= 500;
+        if (!retryable) throw new Error(`GoPlus security API HTTP ${response.status}`);
+        lastError = new Error(`GoPlus security API HTTP ${response.status}`);
+        const retryAfter = Number(response.headers.get("retry-after"));
+        const delay = Number.isFinite(retryAfter) && retryAfter > 0
+          ? Math.min(retryAfter * 1000, 20000)
+          : Math.min(2000 * (2 ** attempt), 16000);
+        if (attempt < 4) await sleep(delay);
+        continue;
+      }
+
+      const payload = await response.json();
+      if (String(payload.code) === "1" && payload.result && typeof payload.result === "object") {
+        return payload;
+      }
+      const message = String(payload.message ?? "unknown response");
+      const limited = /too many requests|rate.?limit|quota|429/i.test(message);
+      if (!limited) throw new Error(`GoPlus returned no authoritative result: ${message}`);
+      lastError = new Error(`GoPlus rate limited the security request: ${message}`);
+      if (attempt < 4) await sleep(Math.min(2000 * (2 ** attempt), 16000));
+    } catch (error) {
+      lastError = error;
+      if (/no authoritative result/.test(String(error.message))) throw error;
+      if (attempt < 4) await sleep(Math.min(1000 * (2 ** attempt), 12000));
+    }
+  }
+  throw lastError ?? new Error("GoPlus security API unavailable after retries");
+}
+
 const REQUIRED_ZERO_FLAGS = [
   "is_honeypot", "cannot_buy", "cannot_sell_all", "is_blacklisted",
   "slippage_modifiable", "transfer_pausable", "hidden_owner",
@@ -12,32 +56,7 @@ export async function verifyNewTokenSecurity(address) {
   const normalized = ethers.getAddress(address);
   const url = new URL(API);
   url.searchParams.set("contract_addresses", normalized.toLowerCase());
-  let response;
-  let lastError;
-  for (let attempt = 0; attempt < 4; attempt++) {
-    try {
-      response = await fetch(url, { signal: AbortSignal.timeout(12000) });
-      if (response.ok) break;
-      if (response.status !== 429 && response.status < 500) {
-        throw new Error(`GoPlus security API HTTP ${response.status}`);
-      }
-      lastError = new Error(`GoPlus security API HTTP ${response.status}`);
-      const retryAfter = Number(response.headers.get("retry-after"));
-      const delayMs = Number.isFinite(retryAfter) && retryAfter > 0
-        ? Math.min(retryAfter * 1000, 15000)
-        : Math.min(1500 * (2 ** attempt), 12000);
-      if (attempt < 3) await new Promise(resolve => setTimeout(resolve, delayMs));
-    } catch (error) {
-      lastError = error;
-      if (attempt === 3) throw error;
-      await new Promise(resolve => setTimeout(resolve, Math.min(1500 * (2 ** attempt), 12000)));
-    }
-  }
-  if (!response?.ok) throw lastError ?? new Error("GoPlus security API unavailable after retries");
-  const payload = await response.json();
-  if (String(payload.code) !== "1" || !payload.result || typeof payload.result !== "object") {
-    throw new Error(`GoPlus returned no authoritative result: ${payload.message ?? "unknown response"}`);
-  }
+  const payload = await getGoPlusPayload(url);
   const data = payload.result[normalized.toLowerCase()] ?? payload.result[normalized];
   if (!data || typeof data !== "object") throw new Error("GoPlus has no security record for this token");
 
