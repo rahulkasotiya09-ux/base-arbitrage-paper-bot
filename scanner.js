@@ -9,7 +9,7 @@ if (!configuredRpc) throw new Error("Set RPC_URL in .env (use a trusted Ethereum
 // The public mainnet.base.org endpoint is aggressively rate-limited. When it is
 // the workflow default, use PublicNode for general reads and retain the configured
 // endpoint as a quote fallback. Explicit user-supplied RPC URLs remain preferred.
-const rpc = configuredRpc.replace(/\\/$/, "") === "https://mainnet.base.org"
+const rpc = configuredRpc.replace(/\/$/, "") === "https://mainnet.base.org"
   ? "https://base-rpc.publicnode.com" : configuredRpc;
 const provider = new ethers.JsonRpcProvider(rpc, cfg.chainId, { staticNetwork: true });
 // Keep quote traffic off a single public RPC. Optional private/provider endpoints can
