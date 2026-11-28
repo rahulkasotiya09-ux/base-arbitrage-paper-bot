@@ -310,9 +310,12 @@ async function main() {
 
   // Bounded three-hop discovery: WETH -> token A -> token B -> WETH.
   // These candidates are discovery-only; the deployed executor remains two-hop.
-  const tripleTokens = tokenEntries
+  // Three-hop discovery must start from established configured assets, not
+  // newly discovered watchlist tokens whose reported USD liquidity does not
+  // prove that a pool exists on any of our configured venues. The two-hop scan
+  // still evaluates all discovered tokens independently.
+  const tripleTokens = Object.entries(cfg.tokens)
     .filter(([name, token]) => name !== "WETH" && token.address.toLowerCase() !== cfg.tokens.WETH.address.toLowerCase())
-    .sort((a, b) => Number(b[1].liquidityUsd ?? 0) - Number(a[1].liquidityUsd ?? 0))
     .slice(0, 3);
   const tripleVenues = scanVenues.filter(v => ["v2", "v3", "aerodrome"].includes(v.type));
   const tripleTasks = [];
@@ -331,6 +334,7 @@ async function main() {
   stats.threeHopReserveWeth = tripleReserveWeth;
   stats.threeHopSampleAmounts = tripleSampleAmounts;
   stats.threeHopTokenCount = tripleTokens.length;
+  stats.threeHopTokenSymbols = tripleTokens.map(([name]) => name);
   stats.threeHopVenueCount = tripleVenues.length;
   stats.threeHopSkipReason = tripleSampleAmounts.length === 0 ? "Aave WETH reserve below 0.00001 WETH" :
     tripleTokens.length < 2 ? "Fewer than two eligible intermediate tokens" :
