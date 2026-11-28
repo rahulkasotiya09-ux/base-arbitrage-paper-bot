@@ -82,7 +82,7 @@ interface IUnlockCallback {
     function unlockCallback(bytes calldata data) external returns (bytes memory);
 }
 
-/// @notice Two-hop V2/V3/V4 Aave flash-arbitrage receiver.
+/// @notice Two-hop V2/V3/V4/Aerodrome/Slipstream Aave flash-arbitrage receiver.
 /// @dev Still experimental: use only on a fork until independently audited.
 contract AaveV3FlashArbV4 is IUnlockCallback {
     address public immutable owner;
