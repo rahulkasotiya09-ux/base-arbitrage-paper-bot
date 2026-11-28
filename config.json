@@ -101,6 +101,21 @@
       "type": "aerodrome",
       "router": "0xcF77a3Ba9A5CA399B7c97c74d54e5b1Beb874E43",
       "factory": "0x420DD381b31aEf6683db6B902084cB0FFECe40Da"
+    },
+    {
+      "name": "Uniswap V4 Base (no-hook pools)",
+      "type": "v4",
+      "quoter": "0xE1A6C5803e3c44368b171BD680c7D32dfc92CA47",
+      "fees": [
+        {
+          "fee": 500,
+          "tickSpacing": 10
+        },
+        {
+          "fee": 3000,
+          "tickSpacing": 60
+        }
+      ]
     }
   ],
   "aaveAddressesProvider": "0xe20fCBdBfFC4Dd138cE8b2E6FBb6CB49777ad64D"
