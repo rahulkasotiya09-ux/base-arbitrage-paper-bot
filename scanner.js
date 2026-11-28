@@ -22,7 +22,7 @@ const scannerExecutor = process.env.EXECUTOR_ADDRESS && scannerWallet ? new ethe
 // be supplied through RPC_FALLBACK_URLS (comma-separated); public Base endpoints are
 // defaults so the scanner improves immediately without requiring another secret.
 const fallbackRpcUrls = (process.env.RPC_FALLBACK_URLS ??
-  "https://base-rpc.publicnode.com,https://base.llamarpc.com")
+  "https://base-rpc.publicnode.com,https://mainnet.base.org")
   .split(",").map(url => url.trim()).filter(Boolean);
 const quoteRpcUrls = [...new Set([rpc, ...fallbackRpcUrls, configuredRpc])];
 const quoteProviders = quoteRpcUrls.map(url => new ethers.JsonRpcProvider(url, cfg.chainId, { staticNetwork: true }));
@@ -265,7 +265,10 @@ function classifyQuoteError(error) {
   ].filter(Boolean).join(" ").toLowerCase();
   if (/429|rate.?limit|too many requests|25\/second|request limit/.test(message)) return "rpc_rate_limited";
   if (/timeout|timed out|etimedout|econnreset|econnrefused|eai_again|socket hang up|failed to fetch|network_error|server_error|502|503|504|520|522|524/.test(message)) return "rpc_transient";
-  if (/insufficient liquidity|insufficient_output|pool does not exist|call_exception|execution reverted|missing revert data/.test(message)) return "no_pool_or_liquidity";
+  if (/insufficient liquidity|insufficient_output|pool does not exist|no liquidity/.test(message)) return "no_pool_or_liquidity";
+  // A generic eth_call revert can be endpoint-specific or have missing revert
+  // data. Retry one alternate RPC before treating it as a genuine no-pool result.
+  if (/call_exception|execution reverted|missing revert data/.test(message)) return "contract_revert";
   return "other_quote_error";
 }
 
@@ -339,7 +342,9 @@ async function main() {
     scanConcurrency: SCAN_CONCURRENCY
   };
   const tasks = [];
-  const poolProbeStats = { pairsChecked: 0, poolsFound: 0, tasksSkippedNoPool: 0, probeErrors: 0 };
+  const feeEstimateFailureKinds = Object.create(null);
+  const feeEstimateFailureSamples = [];
+  const poolProbeStats = { pairsChecked: 0, poolsFound: 0, tasksSkippedNoPool: 0, probeErrors: 0, probeErrorsAllowedToQuote: 0 };
   const routeableVenueKeys = new Set();
   const poolProbeTasks = [];
   const wethForProbe = cfg.tokens.WETH;
@@ -374,7 +379,13 @@ async function main() {
             ? await factory.getPool(wethForProbe.address, token.address, Boolean(fee), { blockTag: block })
             : await factory.getPair(wethForProbe.address, token.address, { blockTag: block });
         exists = poolAddress !== ethers.ZeroAddress && (await provider.getCode(poolAddress, block)) !== "0x";
-      } catch { poolProbeStats.probeErrors++; }
+      } catch {
+        // Do not silently discard a route because the preflight RPC failed.
+        // The actual venue quote is the authoritative pool/liquidity check.
+        poolProbeStats.probeErrors++;
+        poolProbeStats.probeErrorsAllowedToQuote++;
+        exists = true;
+      }
       if (exists) {
         routeableVenueKeys.add(key);
         poolProbeStats.poolsFound++;
@@ -435,8 +446,15 @@ async function main() {
     let feeEstimate;
     try {
       feeEstimate = await estimateCandidateExecutionFees({midToken,buy,sell,buyFee,sellFee},amountIn,midOut,baseOut,block,feeData);
-    } catch {
+    } catch (error) {
       stats.executionFeeEstimateFailures = (stats.executionFeeEstimateFailures ?? 0) + 1;
+      const code = String(error?.code ?? error?.name ?? "unknown").slice(0, 48);
+      feeEstimateFailureKinds[code] = (feeEstimateFailureKinds[code] ?? 0) + 1;
+      if (feeEstimateFailureSamples.length < 5) {
+        const message = String(error?.shortMessage ?? error?.reason ?? error?.message ?? "unknown")
+          .replace(/https?:\/\/\S+/g, "[rpc-url]").replace(/0x[a-fA-F0-9]{64}/g, "[hex-data]").slice(0, 180);
+        feeEstimateFailureSamples.push({ code, message });
+      }
       return;
     }
     const l2GasCostBase = feeEstimate.l2Cost;
@@ -588,7 +606,8 @@ async function main() {
     flashLoanPremiumBps: premiumBps.toString(),
     gasPriceWei: (feeData.maxFeePerGas ?? feeData.gasPrice ?? 0n).toString(),
     gasLimitEstimate: cfg.gasLimitEstimate,
-    stats: { ...stats, quoteFailureKinds, quoteVenueStats, quoteRetryStats, quoteEndpointStats,
+    stats: { ...stats, feeEstimateFailureKinds, feeEstimateFailureSamples,
+      quoteFailureKinds, quoteVenueStats, quoteRetryStats, quoteEndpointStats,
       quoteRpcEndpoints: quoteProviders.length },
     candidates: rows,
     discoveryOnlyCandidates: discoveryOnlyRows
@@ -605,8 +624,8 @@ async function main() {
   const discoveryOnlyCount = rows.length - executorCompatibleCount;
   console.log(`Candidate status: ${executorCompatibleCount} executor-compatible pending validation; ${discoveryOnlyCount} discovery-only (Aerodrome unsupported by current executor).`);
   for (const r of rows.slice(0, 20)) console.log(r.routeHops === 3 ? (r.route.join(" -> ") + " | " + r.amountIn + " WETH | net=" + r.estimatedNetProfit + " (discovery-only)") : (r.base + " " + r.amountIn + " | " + r.buyVenue + " -> " + r.sellVenue + " | net=" + r.estimatedNetProfit));
-  console.log("Scan diagnostics:", JSON.stringify({ ...stats, quoteFailureKinds, quoteVenueStats, quoteRetryStats,
-    quoteEndpointStats, quoteRpcEndpoints: quoteProviders.length }));
+  console.log("Scan diagnostics:", JSON.stringify({ ...stats, feeEstimateFailureKinds, feeEstimateFailureSamples,
+    quoteFailureKinds, quoteVenueStats, quoteRetryStats, quoteEndpointStats, quoteRpcEndpoints: quoteProviders.length }));
   if (!rows.length) console.log("No candidates had positive indicative profit after Aave premium and estimated L2 gas. Final L1 fee and safety buffer are checked by executor.");
 }
 main().catch(e => { console.error(e); process.exitCode = 1; });
