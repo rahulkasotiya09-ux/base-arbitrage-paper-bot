@@ -277,7 +277,8 @@ async function main() {
     minFinalOut: freshMinFinalOut, buyFee, sellFee,
     gasReserveInAsset: 1n, minProfit: price.minimumWethWei, deadline
   };
-  const hasV3Leg = buyVenue.type === "v3" || sellVenue.type === "v3";\n  const populate = r => hasV3Leg\n    ? executor.startV3.populateTransaction(asset, amount, r)\n    : executor.start.populateTransaction(asset, amount, {\n        intermediateToken: r.intermediateToken, buyRouter: r.buyRouter, sellRouter: r.sellRouter,\n        minIntermediateOut: r.minIntermediateOut, minFinalOut: r.minFinalOut,\n        gasReserveInAsset: r.gasReserveInAsset, minProfit: r.minProfit, deadline: r.deadline\n      });
+  const hasV3Leg = buyVenue.type === "v3" || sellVenue.type === "v3";
+  const populate = r => hasV3Leg\n    ? executor.startV3.populateTransaction(asset, amount, r)\n    : executor.start.populateTransaction(asset, amount, {\n        intermediateToken: r.intermediateToken, buyRouter: r.buyRouter, sellRouter: r.sellRouter,\n        minIntermediateOut: r.minIntermediateOut, minFinalOut: r.minFinalOut,\n        gasReserveInAsset: r.gasReserveInAsset, minProfit: r.minProfit, deadline: r.deadline\n      });
   let tx;
   let gas = 0n;
   let l1Fee = 0n;
