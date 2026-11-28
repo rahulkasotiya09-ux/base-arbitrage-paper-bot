@@ -15,7 +15,7 @@ if (!LIVE && BROADCAST_FLAG) {
   throw new Error("Broadcast flag supplied but LIVE_TRADING is not true; refusing to send.");
 }
 const configuredRpc = process.env.RPC_URL;
-const rpc = configuredRpc.replace(/\\/$/, "") === "https://mainnet.base.org"
+const rpc = configuredRpc.replace(/\/$/, "") === "https://mainnet.base.org"
   ? "https://base-rpc.publicnode.com" : configuredRpc;
 const provider = new ethers.JsonRpcProvider(rpc, cfg.chainId, { staticNetwork: true });
 const wallet = new ethers.Wallet(process.env.WALLET_PRIVATE_KEY, provider);
