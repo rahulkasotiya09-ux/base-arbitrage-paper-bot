@@ -47,6 +47,8 @@ const V3_QUOTER_ABI = [
 const V4_QUOTER_ABI = [
   "function quoteExactInputSingle(((address currency0,address currency1,uint24 fee,int24 tickSpacing,address hooks) poolKey,bool zeroForOne,uint128 exactAmount,bytes hookData) params) returns (uint256 amountOut,uint256 gasEstimate)"
 ];
+const V4_STATE_VIEW_ABI = ["function getSlot0(bytes32 poolId) view returns (uint160 sqrtPriceX96,int24 tick,uint24 protocolFee,uint24 lpFee)"];
+const V4_POOL_ID_ABI = ethers.AbiCoder.defaultAbiCoder();
 const AERODROME_ROUTER_ABI = [
   "function getAmountsOut(uint256 amountIn,tuple(address from,address to,bool stable,address factory)[] routes) view returns (uint256[] amounts)"
 ];
@@ -136,6 +138,7 @@ const quoteContracts = quoteProviders.map(quoteProvider => {
     if (venue.type === "v2") contracts.set(venue.name, new ethers.Contract(venue.router, V2_ABI, quoteProvider));
     if (venue.type === "v3") contracts.set(venue.name, new ethers.Contract(venue.quoter, V3_QUOTER_ABI, quoteProvider));
     if (venue.type === "v4") contracts.set(venue.name, new ethers.Contract(venue.quoter, V4_QUOTER_ABI, quoteProvider));
+    if (venue.type === "v4") contracts.set(`${venue.name}:stateView`, new ethers.Contract(cfg.v4StateView, V4_STATE_VIEW_ABI, quoteProvider));
     if (venue.type === "aerodrome") contracts.set(venue.name, new ethers.Contract(venue.router, AERODROME_ROUTER_ABI, quoteProvider));
   }
   return contracts;
@@ -207,12 +210,16 @@ async function quote(venue, tokenIn, tokenOut, amountIn, fee, blockTag) {
         const a = BigInt(tokenIn.address), b = BigInt(tokenOut.address);
         const currency0 = a < b ? tokenIn.address : tokenOut.address;
         const currency1 = a < b ? tokenOut.address : tokenIn.address;
-        const params = {
-          poolKey: { currency0, currency1, fee: fee.fee, tickSpacing: fee.tickSpacing, hooks: ethers.ZeroAddress },
-          zeroForOne: a < b,
-          exactAmount: amountIn,
-          hookData: "0x"
-        };
+        const poolKey = { currency0, currency1, fee: fee.fee, tickSpacing: fee.tickSpacing, hooks: ethers.ZeroAddress };
+        // V4 uses a singleton PoolManager. StateView returns zero sqrtPriceX96
+        // for an uninitialized pool; skip it before invoking the Quoter.
+        const poolId = ethers.keccak256(V4_POOL_ID_ABI.encode(
+          ["address", "address", "uint24", "int24", "address"],
+          [currency0, currency1, fee.fee, fee.tickSpacing, ethers.ZeroAddress]
+        ));
+        const slot0 = await quoteContracts[providerIndex].get(`${venue.name}:stateView`).getSlot0(poolId, { blockTag });
+        if (slot0.sqrtPriceX96 === 0n) throw new Error("V4_POOL_NOT_INITIALIZED");
+        const params = { poolKey, zeroForOne: a < b, exactAmount: amountIn, hookData: "0x" };
         const q = await contract.quoteExactInputSingle.staticCall(params, { blockTag });
         result = q.amountOut ?? q[0];
       } else if (venue.type === "aerodrome") {
@@ -276,7 +283,7 @@ function classifyQuoteError(error) {
   ].filter(Boolean).join(" ").toLowerCase();
   if (/429|rate.?limit|too many requests|25\/second|request limit/.test(message)) return "rpc_rate_limited";
   if (/timeout|timed out|etimedout|econnreset|econnrefused|eai_again|socket hang up|failed to fetch|network_error|server_error|502|503|504|520|522|524/.test(message)) return "rpc_transient";
-  if (/insufficient liquidity|insufficient_output|pool does not exist|no liquidity/.test(message)) return "no_pool_or_liquidity";
+  if (/v4_pool_not_initialized|poolnotinitialized|pool not initialized|pool does not exist|pool not found|insufficient liquidity|insufficient_output|no liquidity/.test(message)) return "no_pool_or_liquidity";
   // A generic eth_call revert can be endpoint-specific or have missing revert
   // data. Retry one alternate RPC before treating it as a genuine no-pool result.
   if (/call_exception|execution reverted|missing revert data/.test(message)) return "contract_revert";
