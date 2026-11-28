@@ -28,7 +28,8 @@ let discoveredTokens = {};
 try {
   const watchlist = JSON.parse(fs.readFileSync(discoveredPath, "utf8"));
   for (const token of (watchlist.tokens ?? []).slice().sort((a, b) => Number(b.liquidityUsd ?? 0) - Number(a.liquidityUsd ?? 0)).slice(0, 50)) {
-    if (token?.safetyPassed === true && token?.safetyProvider === "GoPlus Token Security API" &&
+    if (token?.marketFiltersPassed === true &&
+        Number(token.liquidityUsd ?? 0) >= 1000 &&
         token?.symbol && token?.address && Number.isInteger(token.decimals) &&
         !Object.prototype.hasOwnProperty.call(cfg.tokens, token.symbol)) {
       discoveredTokens[token.symbol] = {
