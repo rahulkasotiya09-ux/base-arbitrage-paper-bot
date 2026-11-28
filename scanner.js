@@ -27,7 +27,7 @@ const discoveredPath = new URL("./new-token-watchlist.json", import.meta.url);
 let discoveredTokens = {};
 try {
   const watchlist = JSON.parse(fs.readFileSync(discoveredPath, "utf8"));
-  for (const token of (watchlist.tokens ?? [])) {
+  for (const token of (watchlist.tokens ?? []).slice().sort((a, b) => Number(b.liquidityUsd ?? 0) - Number(a.liquidityUsd ?? 0)).slice(0, 20)) {
     if (token?.safetyPassed === true && token?.safetyProvider === "GoPlus Token Security API" &&
         token?.symbol && token?.address && Number.isInteger(token.decimals) &&
         !Object.prototype.hasOwnProperty.call(cfg.tokens, token.symbol)) {
@@ -88,6 +88,10 @@ async function main() {
   const poolAddress = await poolProvider.getPool({ blockTag: block });
   const pool = new ethers.Contract(poolAddress, AAVE_POOL_ABI, provider);
   const premiumBps = BigInt(await pool.FLASHLOAN_PREMIUM_TOTAL({ blockTag: block }));
+  // Live executor currently supports V2/V2 routes only. Skip V3 quote combinations
+  // that cannot be broadcast by this executor, so scan time is spent on executable paths.
+  const scanVenues = cfg.venues.filter(venue => venue.type === "v2");
+  if (scanVenues.length < 2) throw new Error("At least two configured V2 venues are required for executable arbitrage scanning");
   const rows = [];
   const stats = {
     routeQuotesAttempted: 0, quoteFailures: 0, insufficientFlashLiquidity: 0,
@@ -103,7 +107,7 @@ async function main() {
       for (const amountText of amounts.amounts) {
         const amountIn = parse(amountText, baseToken.decimals);
         if (amountIn > reserveBalance) { stats.insufficientFlashLiquidity++; continue; }
-        for (const buy of cfg.venues) for (const sell of cfg.venues) {
+        for (const buy of scanVenues) for (const sell of scanVenues) {
           if (buy.name === sell.name) continue;
           for (const buyFee of feeOptions(buy)) {
             stats.routeQuotesAttempted++;
