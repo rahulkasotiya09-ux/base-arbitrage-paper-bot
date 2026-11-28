@@ -72,7 +72,7 @@ contract AaveV3ForkTest is Test {
         uint256 loanAmount = 1 ether;
         uint256 minUsdcOut = 2_900e6;
         uint256 minWethOut = 1.10 ether;
-        AaveV3FlashArb.Route memory route = AaveV3FlashArb.Route({
+        AaveV3FlashArb.RouteLegacy memory route = AaveV3FlashArb.RouteLegacy({
             intermediateToken: USDC,
             buyRouter: UNISWAP_V2_ROUTER,
             sellRouter: sushiRouter,
@@ -98,7 +98,7 @@ contract AaveV3ForkTest is Test {
         receiver.setToken(USDC, true);
         receiver.setRouter(UNISWAP_V2_ROUTER, true);
 
-        AaveV3FlashArb.Route memory route = AaveV3FlashArb.Route({
+        AaveV3FlashArb.RouteLegacy memory route = AaveV3FlashArb.RouteLegacy({
             intermediateToken: USDC,
             buyRouter: UNISWAP_V2_ROUTER,
             sellRouter: UNISWAP_V2_ROUTER,
@@ -131,7 +131,7 @@ contract AaveV3ForkTest is Test {
 
         // Do not alter pair reserves or balances: use the current Base fork state.
         // Same-pool round trip pays swap fees and must not pass the profit gate.
-        AaveV3FlashArb.Route memory route = AaveV3FlashArb.Route({
+        AaveV3FlashArb.RouteLegacy memory route = AaveV3FlashArb.RouteLegacy({
             intermediateToken: USDC,
             buyRouter: UNISWAP_V2_ROUTER,
             sellRouter: UNISWAP_V2_ROUTER,
