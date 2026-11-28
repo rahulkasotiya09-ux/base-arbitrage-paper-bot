@@ -54,9 +54,20 @@ async function quote(venue, tokenIn, tokenOut, amountIn, fee, blockTag) {
       amountIn, fee, sqrtPriceLimitX96: 0
     }, { blockTag });
     return q.amountOut ?? q[0];
-  } catch {
+  } catch (error) {
+    const kind = classifyQuoteError(error);
+    quoteFailureKinds[kind] = (quoteFailureKinds[kind] ?? 0) + 1;
     return null;
   }
+}
+
+const quoteFailureKinds = Object.create(null);
+function classifyQuoteError(error) {
+  const message = String(error?.shortMessage ?? error?.reason ?? error?.message ?? error).toLowerCase();
+  if (/429|rate.?limit|too many requests/.test(message)) return "rpc_rate_limited";
+  if (/timeout|timed out|etimedout|econnreset|network_error|server_error|502|503|504/.test(message)) return "rpc_transient";
+  if (/insufficient liquidity|insufficient_output|pool does not exist|call_exception|execution reverted|missing revert data/.test(message)) return "no_pool_or_liquidity";
+  return "other_quote_error";
 }
 
 const quoteCache = new Map();
@@ -66,7 +77,11 @@ function cachedQuote(venue, tokenIn, tokenOut, amountIn, fee, blockTag) {
   if (!quoteCache.has(key)) quoteCache.set(key, quote(venue, tokenIn, tokenOut, amountIn, fee, blockTag));
   return quoteCache.get(key);
 }
-const SCAN_CONCURRENCY = 8;
+// Keep RPC pressure below common public Base endpoint limits. Override only
+// with a provider whose documented request capacity supports higher concurrency.
+const configuredConcurrency = Number(process.env.SCAN_CONCURRENCY ?? 4);
+const SCAN_CONCURRENCY = Number.isInteger(configuredConcurrency)
+  ? Math.max(1, Math.min(8, configuredConcurrency)) : 4;
 async function runBounded(items, concurrency, worker) {
   let next = 0;
   await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, async () => {
@@ -118,7 +133,8 @@ async function main() {
   const rows = [];
   const stats = {
     routeQuotesAttempted: 0, quoteFailures: 0, insufficientFlashLiquidity: 0,
-    rejectedBeforeGas: 0, rejectedAfterGas: 0, profitableIndicative: 0
+    rejectedBeforeGas: 0, rejectedAfterGas: 0, profitableIndicative: 0,
+    scanConcurrency: SCAN_CONCURRENCY
   };
   const tasks = [];
   for (const amounts of cfg.scanAmounts) {
@@ -155,7 +171,12 @@ async function main() {
     const gross = baseOut - amountOwed;
     const gasPrice = feeData.maxFeePerGas ?? feeData.gasPrice;
     if (baseToken.address.toLowerCase() !== cfg.wrappedNative.toLowerCase() || !gasPrice) return;
-    const gasCostBase = BigInt(cfg.gasLimitEstimate) * gasPrice;
+    // Advisory scanner estimates are route-specific and intentionally lower
+    // than the executor's final measured gas. The executor still performs an
+    // exact estimate, L1 fee calculation and full transaction simulation.
+    const scannerGasUnits = buy.type === "v3" && sell.type === "v3" ? 550000n
+      : buy.type === "v3" || sell.type === "v3" ? 450000n : 350000n;
+    const gasCostBase = scannerGasUnits * gasPrice;
     if (gross <= gasCostBase) { stats.rejectedAfterGas++; return; }
     const net = gross - gasCostBase;
     if (net > 0n) {
@@ -181,6 +202,7 @@ async function main() {
         estimatedNetProfitRaw: net.toString(),
         gasPriceWei: gasPrice.toString(),
         gasAdjusted: true,
+        scannerGasUnits: scannerGasUnits.toString(),
         quoteBlock: block,
         l1DataFeeIncluded: false,
         executionReady: true,
@@ -198,7 +220,8 @@ async function main() {
     flashLoanPremiumBps: premiumBps.toString(),
     gasPriceWei: (feeData.maxFeePerGas ?? feeData.gasPrice ?? 0n).toString(),
     gasLimitEstimate: cfg.gasLimitEstimate,
-    stats, candidates: rows
+    stats: { ...stats, quoteFailureKinds },
+    candidates: rows
   };
   fs.writeFileSync("opportunities.json", JSON.stringify(output, null, 2));
   if (rows.length) {
@@ -210,7 +233,7 @@ async function main() {
   console.log(`Scanned block ${block}. ${rows.length} preliminary candidate(s) written to opportunities.json`);
   if (rows.some(r => !r.executionReady)) console.log("V2 and V3 routes are quoted; executor independently validates the router type, factory/pool and exact simulation.");
   for (const r of rows.slice(0, 20)) console.log(`${r.base} ${r.amountIn} | ${r.buyVenue} -> ${r.sellVenue} | net=${r.estimatedNetProfit}`);
-  console.log("Scan diagnostics:", JSON.stringify(stats));
+  console.log("Scan diagnostics:", JSON.stringify({ ...stats, quoteFailureKinds }));
   if (!rows.length) console.log("No candidates had positive indicative profit after Aave premium and estimated L2 gas. Final L1 fee and safety buffer are checked by executor.");
 }
 main().catch(e => { console.error(e); process.exitCode = 1; });
