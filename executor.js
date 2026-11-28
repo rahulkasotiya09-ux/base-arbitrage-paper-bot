@@ -26,7 +26,8 @@ const executor = new ethers.Contract(ethers.getAddress(process.env.EXECUTOR_ADDR
   "function approvedToken(address) view returns (bool)",
   "function approvedRouter(address) view returns (bool)",
   "event ArbitrageCompleted(address indexed asset,address indexed intermediateToken,uint256 principal,uint256 premium,uint256 grossProfit)",
-  "function start(address asset,uint256 amount,(address intermediateToken,address buyRouter,address sellRouter,uint256 minIntermediateOut,uint256 minFinalOut,uint24 buyFee,uint24 sellFee,uint256 gasReserveInAsset,uint256 minProfit,uint256 deadline) route)"
+  "function start(address asset,uint256 amount,(address intermediateToken,address buyRouter,address sellRouter,uint256 minIntermediateOut,uint256 minFinalOut,uint256 gasReserveInAsset,uint256 minProfit,uint256 deadline) route)",
+  "function startV3(address asset,uint256 amount,(address intermediateToken,address buyRouter,address sellRouter,uint256 minIntermediateOut,uint256 minFinalOut,uint24 buyFee,uint24 sellFee,uint256 gasReserveInAsset,uint256 minProfit,uint256 deadline) route)"
 ], wallet);
 const routerAbi = [
   "function factory() view returns (address)",
@@ -185,13 +186,16 @@ async function main() {
   ];
   for (const { addr, venue, boundFactory } of selectedVenues) {
     if (!venue?.factory || !["v2", "v3"].includes(venue.type)) throw new Error("Router is not in the approved V2/V3 configuration");
-    const [code, routerKind] = await Promise.all([provider.getCode(addr), executor.routerType(addr)]);
-    if (code === "0x" || Number(routerKind) !== (venue.type === "v2" ? 1 : 2) ||
-        boundFactory.toLowerCase() !== venue.factory.toLowerCase()) throw new Error("Router code/type/factory binding failed");
+    const code = await provider.getCode(addr);
+    if (code === "0x" || boundFactory.toLowerCase() !== venue.factory.toLowerCase()) {
+      throw new Error("Router code/factory binding failed");
+    }
     if (venue.type === "v2") {
       const factory = await new ethers.Contract(addr, routerAbi, provider).factory();
       if (factory.toLowerCase() !== venue.factory.toLowerCase()) throw new Error("V2 router factory mismatch");
     } else {
+      const routerKind = await executor.routerType(addr).catch(() => 0n);
+      if (Number(routerKind) !== 2) throw new Error("V3 execution requires the newly deployed V3-capable executor and V3 router approval");
       const fee = Number(addr.toLowerCase() === buy.toLowerCase() ? c.buyFee : c.sellFee);
       if (![500, 3000, 10000].includes(fee)) throw new Error("Unsupported V3 fee tier");
       const pool = await new ethers.Contract(venue.factory, ["function getPool(address,address,uint24) view returns (address)"], provider)
@@ -264,7 +268,7 @@ async function main() {
     minFinalOut: freshMinFinalOut, buyFee, sellFee,
     gasReserveInAsset: 1n, minProfit: price.minimumWethWei, deadline
   };
-  const populate = r => executor.start.populateTransaction(asset, amount, r);
+  const hasV3Leg = buyVenue.type === "v3" || sellVenue.type === "v3";\n  const populate = r => hasV3Leg\n    ? executor.startV3.populateTransaction(asset, amount, r)\n    : executor.start.populateTransaction(asset, amount, {\n        intermediateToken: r.intermediateToken, buyRouter: r.buyRouter, sellRouter: r.sellRouter,\n        minIntermediateOut: r.minIntermediateOut, minFinalOut: r.minFinalOut,\n        gasReserveInAsset: r.gasReserveInAsset, minProfit: r.minProfit, deadline: r.deadline\n      });
   let tx;
   let gas = 0n;
   let l1Fee = 0n;
