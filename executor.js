@@ -33,14 +33,20 @@ const executor = new ethers.Contract(ethers.getAddress(process.env.EXECUTOR_ADDR
   "event ArbitrageCompleted(address indexed asset,address indexed intermediateToken,uint256 principal,uint256 premium,uint256 grossProfit)",
   "function start(address asset,uint256 amount,(address intermediateToken,address buyRouter,address sellRouter,uint256 minIntermediateOut,uint256 minFinalOut,uint256 gasReserveInAsset,uint256 minProfit,uint256 deadline) route)",
   "function startV3(address asset,uint256 amount,(address intermediateToken,address buyRouter,address sellRouter,uint256 minIntermediateOut,uint256 minFinalOut,uint24 buyFee,uint24 sellFee,uint256 gasReserveInAsset,uint256 minProfit,uint256 deadline) route)",
-  "function startV4(address asset,uint256 amount,(address intermediateToken,address buyRouter,address sellRouter,uint256 minIntermediateOut,uint256 minFinalOut,uint24 buyFee,uint24 sellFee,int24 buyTickSpacing,int24 sellTickSpacing,uint256 gasReserveInAsset,uint256 minProfit,uint256 deadline) route)"
+  "function startV4(address asset,uint256 amount,(address intermediateToken,address buyRouter,address sellRouter,uint256 minIntermediateOut,uint256 minFinalOut,uint24 buyFee,uint24 sellFee,int24 buyTickSpacing,int24 sellTickSpacing,uint256 gasReserveInAsset,uint256 minProfit,uint256 deadline) route)",
+  "function startMulti(address asset,uint256 amount,(address intermediateToken,address buyRouter,address sellRouter,uint256 minIntermediateOut,uint256 minFinalOut,uint24 buyFee,uint24 sellFee,int24 buyTickSpacing,int24 sellTickSpacing,bool buyStable,bool sellStable,uint256 gasReserveInAsset,uint256 minProfit,uint256 deadline) route)"
 ], wallet);
 const routerAbi = [
   "function factory() view returns (address)",
   "function getAmountsOut(uint256 amountIn,address[] calldata path) view returns (uint256[] memory amounts)"
 ];
 const v3QuoterAbi = ["function quoteExactInputSingle((address tokenIn,address tokenOut,uint256 amountIn,uint24 fee,uint160 sqrtPriceLimitX96) params) returns (uint256 amountOut,uint160,uint32,uint256)"];
-const v4QuoterAbi = ["function quoteExactInputSingle(((address currency0,address currency1,uint24 fee,int24 tickSpacing,address hooks) poolKey,bool zeroForOne,uint128 exactAmount,bytes hookData) params) returns (uint256 amountOut,uint256 gasEstimate)"];
+const v4QuoterAbi = ["function quoteExactInputSingle(((address currency0,address currency1,uint24 fee,int24 tickSpacing,address hooks) poolKey,bool zeroForOne,uint128 exactAmount,bytes hookData) params)"];
+const aerodromeRouterAbi = [
+  "function defaultFactory() view returns (address)",
+  "function getAmountsOut(uint256 amountIn,tuple(address from,address to,bool stable,address factory)[] routes) view returns (uint256[] amounts)"
+];
+const slipstreamQuoterAbi = ["function quoteExactInputSingleV3((address tokenIn,address tokenOut,uint256 amountIn,int24 tickSpacing,uint160 sqrtPriceLimitX96) params) returns (uint256 amountOut,uint160,uint32,uint256)"];
 async function freshQuote(venue, tokenIn, tokenOut, amountIn, fee) {
   if (venue.type === "v2") {
     const amounts = await new ethers.Contract(venue.router, routerAbi, provider).getAmountsOut(amountIn, [tokenIn, tokenOut]);
@@ -50,6 +56,19 @@ async function freshQuote(venue, tokenIn, tokenOut, amountIn, fee) {
   if (venue.type === "v3") {
     const q = await new ethers.Contract(venue.quoter, v3QuoterAbi, provider).quoteExactInputSingle.staticCall({
       tokenIn, tokenOut, amountIn, fee: Number(fee?.fee ?? fee), sqrtPriceLimitX96: 0
+    });
+    return q.amountOut ?? q[0];
+  }
+  if (venue.type === "aerodrome") {
+    const amounts = await new ethers.Contract(venue.router, aerodromeRouterAbi, provider).getAmountsOut(
+      amountIn, [{ from: tokenIn, to: tokenOut, stable: Boolean(fee), factory: venue.factory }]
+    );
+    if (amounts.length !== 2) throw new Error("Invalid Aerodrome quote");
+    return amounts[1];
+  }
+  if (venue.type === "slipstream") {
+    const q = await new ethers.Contract(venue.quoter, slipstreamQuoterAbi, provider).quoteExactInputSingleV3.staticCall({
+      tokenIn, tokenOut, amountIn, tickSpacing: Number(fee), sqrtPriceLimitX96: 0
     });
     return q.amountOut ?? q[0];
   }
@@ -178,10 +197,8 @@ async function main() {
       Date.now() - Date.parse(discovered.security.checkedAt) <= 10 * 60 * 1000;
     if (!baseAllowed || (!tokenAllowed && !securityFresh) || !buyAllowed || !sellAllowed) return false;
     for (const venue of [buyVenue, sellVenue]) {
-      const expectedType = venue.type === "v2" ? 1 : venue.type === "v3" ? 2 : venue.type === "v4" ? 3 : 0;
-      if (!expectedType || Number(await executor.routerType(venue.router).catch(() => 0n)) !== expectedType) {
-        return false;
-      }
+      const expectedType = ({ v2: 1, v3: 2, v4: 3, aerodrome: 4, slipstream: 5 })[venue.type] ?? 0;
+      if (!expectedType || Number(await executor.routerType(venue.router).catch(() => 0n)) !== expectedType) return false;
     }
     return true;
   }))).filter(Boolean);
@@ -255,7 +272,7 @@ async function main() {
     { addr: sell, venue: cfg.venues.find(v => v.router?.toLowerCase() === sell.toLowerCase()), boundFactory: sellFactoryOnchain, legFee: c.sellFee }
   ];
   for (const { addr, venue, boundFactory, legFee } of selectedVenues) {
-    if (!venue || !["v2", "v3", "v4"].includes(venue.type)) throw new Error("Router is not in the approved V2/V3/V4 configuration");
+    if (!venue || !["v2", "v3", "v4", "aerodrome", "slipstream"].includes(venue.type)) throw new Error("Router is not in the approved venue configuration");
     const code = await provider.getCode(addr);
     if (code === "0x") throw new Error("Configured execution venue has no deployed code");
     if (venue.type === "v4") {
@@ -277,17 +294,37 @@ async function main() {
     if (!venue.factory || boundFactory.toLowerCase() !== venue.factory.toLowerCase()) {
       throw new Error("Router factory binding failed");
     }
+    const routerKind = Number(await executor.routerType(addr).catch(() => 0n));
     if (venue.type === "v2") {
       const factory = await new ethers.Contract(addr, routerAbi, provider).factory();
-      if (factory.toLowerCase() !== venue.factory.toLowerCase()) throw new Error("V2 router factory mismatch");
-    } else {
-      const routerKind = await executor.routerType(addr).catch(() => 0n);
-      if (Number(routerKind) !== 2) throw new Error("V3 execution requires the newly deployed V3-capable executor and V3 router approval");
+      if (factory.toLowerCase() !== venue.factory.toLowerCase() || routerKind !== 1) throw new Error("V2 router factory/type mismatch");
+    } else if (venue.type === "v3") {
+      if (routerKind !== 2) throw new Error("V3 router is not registered as type 2 on deployed executor");
       const fee = Number(legFee?.fee ?? legFee);
       if (![500, 3000, 10000].includes(fee)) throw new Error("Unsupported V3 fee tier");
       const pool = await new ethers.Contract(venue.factory, ["function getPool(address,address,uint24) view returns (address)"], provider)
         .getPool(asset, intermediate, fee);
       if (pool === ethers.ZeroAddress || await provider.getCode(pool) === "0x") throw new Error("Configured V3 factory has no deployed pool for selected token pair/fee");
+    } else if (venue.type === "aerodrome") {
+      if (routerKind !== 4) throw new Error("Aerodrome router is not registered as type 4 on deployed executor");
+      const [factory, pool] = await Promise.all([
+        new ethers.Contract(addr, ["function defaultFactory() view returns (address)"], provider).defaultFactory(),
+        new ethers.Contract(venue.factory, ["function getPool(address,address,bool) view returns (address)"], provider)
+          .getPool(asset, intermediate, Boolean(legFee))
+      ]);
+      if (factory.toLowerCase() !== venue.factory.toLowerCase() || pool === ethers.ZeroAddress || await provider.getCode(pool) === "0x")
+        throw new Error("Aerodrome factory binding or stable/volatile pool validation failed");
+    } else {
+      if (routerKind !== 5) throw new Error("Slipstream router is not registered as type 5 on deployed executor");
+      const spacing = Number(legFee);
+      if (![1, 50, 100, 200, 2000].includes(spacing)) throw new Error("Unsupported Slipstream tick spacing");
+      const [factory, pool] = await Promise.all([
+        new ethers.Contract(addr, ["function factory() view returns (address)"], provider).factory(),
+        new ethers.Contract(venue.factory, ["function getPool(address,address,int24) view returns (address)"], provider)
+          .getPool(asset, intermediate, spacing)
+      ]);
+      if (factory.toLowerCase() !== venue.factory.toLowerCase() || pool === ethers.ZeroAddress || await provider.getCode(pool) === "0x")
+        throw new Error("Slipstream factory binding or pool validation failed");
     }
   }
   for (const token of [asset, intermediate]) {
@@ -388,19 +425,24 @@ async function main() {
   // The reserve is embedded in calldata, so estimate gas and L1 data fees
   // repeatedly using the exact candidate calldata until the reserve converges.
   // Any RPC instability or failure to converge causes a safe refusal.
+  const hasMultiLeg = ["aerodrome", "slipstream"].includes(buyVenue.type) || ["aerodrome", "slipstream"].includes(sellVenue.type);
   const route = {
     intermediateToken: intermediate, buyRouter: buy, sellRouter: sell,
     minIntermediateOut: freshMinIntermediateOut,
     minFinalOut: freshMinFinalOut, buyFee, sellFee, buyTickSpacing, sellTickSpacing,
+    buyStable: buyVenue.type === "aerodrome" && Boolean(c.buyFee),
+    sellStable: sellVenue.type === "aerodrome" && Boolean(c.sellFee),
     gasReserveInAsset: 1n, minProfit: effectiveMinimumProfitWeth, deadline
   };
   const hasV4Leg = buyVenue.type === "v4" || sellVenue.type === "v4";
   const hasV3Leg = buyVenue.type === "v3" || sellVenue.type === "v3";
-  const populate = r => hasV4Leg
-    ? executor.startV4.populateTransaction(asset, amount, r)
-    : hasV3Leg
-      ? executor.startV3.populateTransaction(asset, amount, r)
-      : executor.start.populateTransaction(asset, amount, {
+  const populate = r => hasMultiLeg
+    ? executor.startMulti.populateTransaction(asset, amount, r)
+    : hasV4Leg
+      ? executor.startV4.populateTransaction(asset, amount, r)
+      : hasV3Leg
+        ? executor.startV3.populateTransaction(asset, amount, r)
+        : executor.start.populateTransaction(asset, amount, {
         intermediateToken: r.intermediateToken,
         buyRouter: r.buyRouter,
         sellRouter: r.sellRouter,
