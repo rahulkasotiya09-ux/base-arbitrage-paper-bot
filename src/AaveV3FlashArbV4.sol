@@ -146,6 +146,14 @@ contract AaveV3FlashArbV4 is IUnlockCallback {
         uint256 deadline;
     }
 
+    struct SwapRequest {
+        address tokenIn;
+        address tokenOut;
+        uint256 amountIn;
+        uint256 minOut;
+        uint256 deadline;
+    }
+
     struct V4SwapData {
         address tokenIn;
         address tokenOut;
@@ -488,62 +496,61 @@ contract AaveV3FlashArbV4 is IUnlockCallback {
     ) internal returns (uint256) {
         uint8 kind = routerType[router];
         if (kind == 3) return _swapV4(tokenIn, tokenOut, amountIn, minOut, fee, tickSpacing);
-        if (kind == 4) return _swapAerodrome(router, tokenIn, tokenOut, amountIn, minOut, deadline, stable);
-        if (kind == 5) return _swapSlipstream(router, tokenIn, tokenOut, amountIn, minOut, deadline, tickSpacing);
+        SwapRequest memory request = SwapRequest(tokenIn, tokenOut, amountIn, minOut, deadline);
+        if (kind == 4) return _swapAerodrome(router, request, stable);
+        if (kind == 5) return _swapSlipstream(router, request, tickSpacing);
         return _swap(router, tokenIn, tokenOut, amountIn, minOut, deadline, fee);
     }
 
-    function _swapAerodrome(
-        address router, address tokenIn, address tokenOut, uint256 amountIn,
-        uint256 minOut, uint256 deadline, bool stable
-    ) internal returns (uint256 actualAmountOut) {
+    function _swapAerodrome(address router, SwapRequest memory p, bool stable)
+        internal returns (uint256 actualAmountOut)
+    {
         address factory = routerFactory[router];
         require(approvedRouter[router] && factory != address(0) &&
             IAerodromeRouter(router).defaultFactory() == factory, "AERODROME_ROUTER_FACTORY_MISMATCH");
-        require(IAerodromeFactory(factory).getPool(tokenIn, tokenOut, stable) != address(0), "AERODROME_POOL_MISSING");
-        uint256 beforeIn = IERC20(tokenIn).balanceOf(address(this));
-        uint256 beforeOut = IERC20(tokenOut).balanceOf(address(this));
-        _safeApprove(tokenIn, router, amountIn);
+        require(IAerodromeFactory(factory).getPool(p.tokenIn, p.tokenOut, stable) != address(0), "AERODROME_POOL_MISSING");
+        uint256 beforeIn = IERC20(p.tokenIn).balanceOf(address(this));
+        uint256 beforeOut = IERC20(p.tokenOut).balanceOf(address(this));
+        _safeApprove(p.tokenIn, router, p.amountIn);
         IAerodromeRouter.Route[] memory routes = new IAerodromeRouter.Route[](1);
-        routes[0] = IAerodromeRouter.Route(tokenIn, tokenOut, stable, factory);
+        routes[0] = IAerodromeRouter.Route(p.tokenIn, p.tokenOut, stable, factory);
         uint256[] memory amounts = IAerodromeRouter(router).swapExactTokensForTokens(
-            amountIn, minOut, routes, address(this), deadline
+            p.amountIn, p.minOut, routes, address(this), p.deadline
         );
-        require(amounts.length == 2 && amounts[1] >= minOut, "BAD_AERODROME_SWAP_RESULT");
-        uint256 afterIn = IERC20(tokenIn).balanceOf(address(this));
-        uint256 afterOut = IERC20(tokenOut).balanceOf(address(this));
-        require(beforeIn >= afterIn && beforeIn - afterIn == amountIn, "AERODROME_INPUT_DELTA");
+        require(amounts.length == 2 && amounts[1] >= p.minOut, "BAD_AERODROME_SWAP_RESULT");
+        uint256 afterIn = IERC20(p.tokenIn).balanceOf(address(this));
+        uint256 afterOut = IERC20(p.tokenOut).balanceOf(address(this));
+        require(beforeIn >= afterIn && beforeIn - afterIn == p.amountIn, "AERODROME_INPUT_DELTA");
         require(afterOut >= beforeOut, "AERODROME_OUTPUT_DELTA");
         actualAmountOut = afterOut - beforeOut;
-        require(actualAmountOut >= minOut, "AERODROME_MIN_OUT");
-        _safeApprove(tokenIn, router, 0);
+        require(actualAmountOut >= p.minOut, "AERODROME_MIN_OUT");
+        _safeApprove(p.tokenIn, router, 0);
     }
 
-    function _swapSlipstream(
-        address router, address tokenIn, address tokenOut, uint256 amountIn,
-        uint256 minOut, uint256 deadline, int24 tickSpacing
-    ) internal returns (uint256 actualAmountOut) {
+    function _swapSlipstream(address router, SwapRequest memory p, int24 tickSpacing)
+        internal returns (uint256 actualAmountOut)
+    {
         address factory = routerFactory[router];
         require(approvedRouter[router] && factory != address(0) &&
             ISlipstreamRouter(router).factory() == factory, "SLIPSTREAM_ROUTER_FACTORY_MISMATCH");
-        require(ISlipstreamFactory(factory).getPool(tokenIn, tokenOut, tickSpacing) != address(0), "SLIPSTREAM_POOL_MISSING");
-        uint256 beforeIn = IERC20(tokenIn).balanceOf(address(this));
-        uint256 beforeOut = IERC20(tokenOut).balanceOf(address(this));
-        _safeApprove(tokenIn, router, amountIn);
+        require(ISlipstreamFactory(factory).getPool(p.tokenIn, p.tokenOut, tickSpacing) != address(0), "SLIPSTREAM_POOL_MISSING");
+        uint256 beforeIn = IERC20(p.tokenIn).balanceOf(address(this));
+        uint256 beforeOut = IERC20(p.tokenOut).balanceOf(address(this));
+        _safeApprove(p.tokenIn, router, p.amountIn);
         uint256 reportedOut = ISlipstreamRouter(router).exactInputSingle(
             ISlipstreamRouter.ExactInputSingleParams({
-                tokenIn: tokenIn, tokenOut: tokenOut, tickSpacing: tickSpacing,
-                recipient: address(this), deadline: deadline, amountIn: amountIn,
-                amountOutMinimum: minOut, sqrtPriceLimitX96: 0
+                tokenIn: p.tokenIn, tokenOut: p.tokenOut, tickSpacing: tickSpacing,
+                recipient: address(this), deadline: p.deadline, amountIn: p.amountIn,
+                amountOutMinimum: p.minOut, sqrtPriceLimitX96: 0
             })
         );
-        uint256 afterIn = IERC20(tokenIn).balanceOf(address(this));
-        uint256 afterOut = IERC20(tokenOut).balanceOf(address(this));
-        require(beforeIn >= afterIn && beforeIn - afterIn == amountIn, "SLIPSTREAM_INPUT_DELTA");
+        uint256 afterIn = IERC20(p.tokenIn).balanceOf(address(this));
+        uint256 afterOut = IERC20(p.tokenOut).balanceOf(address(this));
+        require(beforeIn >= afterIn && beforeIn - afterIn == p.amountIn, "SLIPSTREAM_INPUT_DELTA");
         require(afterOut >= beforeOut, "SLIPSTREAM_OUTPUT_DELTA");
         actualAmountOut = afterOut - beforeOut;
-        require(reportedOut == actualAmountOut && actualAmountOut >= minOut, "SLIPSTREAM_OUTPUT_MISMATCH");
-        _safeApprove(tokenIn, router, 0);
+        require(reportedOut == actualAmountOut && actualAmountOut >= p.minOut, "SLIPSTREAM_OUTPUT_MISMATCH");
+        _safeApprove(p.tokenIn, router, 0);
     }
 
     function _swapAny(
