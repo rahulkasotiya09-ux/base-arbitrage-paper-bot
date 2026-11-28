@@ -294,6 +294,50 @@ async function main() {
     if (await provider.getCode(token) === "0x") throw new Error("Token contract missing");
   }
 
+  // Auto-approval is restricted to a scanner-profitable discovery candidate,
+  // rechecked directly with GoPlus. Its actual on-chain cost is added to the
+  // minimum profit gate before the arbitrage transaction is simulated.
+  let discoveredApprovalCostWeth = 0n;
+  const fee = await provider.getFeeData();
+  const feeFields = fee.maxFeePerGas
+    ? { maxFeePerGas: fee.maxFeePerGas, maxPriorityFeePerGas: fee.maxPriorityFeePerGas ?? 0n }
+    : { gasPrice: fee.gasPrice };
+  const cap = feeFields.maxFeePerGas ?? feeFields.gasPrice;
+  if (!cap) throw new Error("No gas price available");
+  if (needsDiscoveredTokenApproval) {
+    if (process.env.AUTO_APPROVE_DISCOVERED_TOKENS !== "true") {
+      throw new Error("Profitable discovered token awaits AUTO_APPROVE_DISCOVERED_TOKENS=true");
+    }
+    if (!LIVE) throw new Error("Simulation mode cannot approve a new token; no approval was sent");
+    const freshSecurity = await verifyNewTokenSecurity(intermediate);
+    if (!freshSecurity.passed || freshSecurity.chainId !== 8453) {
+      throw new Error("Fresh GoPlus security verification failed; token approval refused");
+    }
+    const approvalTx = await executor.setToken.populateTransaction(intermediate, true);
+    const approvalGas = await provider.estimateGas({ ...approvalTx, from: wallet.address, ...feeFields });
+    const approvalL1 = await getL1Fee(approvalTx.data ?? "0x");
+    const approvalGasLimit = ceilDiv(approvalGas * 120n, 100n);
+    const approvalReserve = ceilDiv((approvalGasLimit * cap + approvalL1) * buffer, 10000n);
+    if (await provider.getBalance(wallet.address) < approvalReserve) {
+      throw new Error("Wallet balance is below the buffered discovered-token approval cost");
+    }
+    await provider.call({ ...approvalTx, from: wallet.address, gasLimit: approvalGasLimit, ...feeFields });
+    console.log("Approving GoPlus-cleared token on executor:", intermediate);
+    const approvalResponse = await wallet.sendTransaction({ ...approvalTx, gasLimit: approvalGasLimit, ...feeFields });
+    console.log("Token approval transaction:", approvalResponse.hash);
+    const approvalReceipt = await approvalResponse.wait();
+    if (!approvalReceipt || approvalReceipt.status !== 1) throw new Error("Discovered-token approval transaction reverted");
+    const approvalEffectiveGasPrice = approvalReceipt.effectiveGasPrice ?? approvalReceipt.gasPrice ?? cap;
+    const approvalActualL2 = approvalReceipt.gasUsed * approvalEffectiveGasPrice;
+    const approvalActualL1 = approvalReceipt.l1Fee !== undefined && approvalReceipt.l1Fee !== null
+      ? approvalReceipt.l1Fee : await getL1Fee(approvalTx.data ?? "0x");
+    discoveredApprovalCostWeth = ceilDiv((approvalActualL2 + approvalActualL1) * buffer, 10000n);
+    if (!(await executor.approvedToken(intermediate))) {
+      throw new Error("Approval receipt succeeded but executor token allowlist did not update");
+    }
+    console.log("Token approval confirmed; buffered approval cost added to profit floor.");
+  }
+
   if (asset.toLowerCase() !== cfg.wrappedNative.toLowerCase()) {
     throw new Error("Live executor only supports the configured wrapped-native asset as the gas-reserve denomination");
   }
@@ -338,14 +382,8 @@ async function main() {
     throw new Error("Aave WETH liquidity is below the requested flash-loan amount");
   }
 
-  const fee = await provider.getFeeData();
-  const feeFields = fee.maxFeePerGas
-    ? { maxFeePerGas: fee.maxFeePerGas, maxPriorityFeePerGas: fee.maxPriorityFeePerGas ?? 0n }
-    : { gasPrice: fee.gasPrice };
-  const cap = feeFields.maxFeePerGas ?? feeFields.gasPrice;
-  if (!cap) throw new Error("No gas price available");
-
   const price = await getMinimumProfitWeth();
+  const effectiveMinimumProfitWeth = price.minimumWethWei + discoveredApprovalCostWeth;
   const deadline = Math.floor(Date.now() / 1000) + 45;
   // The reserve is embedded in calldata, so estimate gas and L1 data fees
   // repeatedly using the exact candidate calldata until the reserve converges.
@@ -354,7 +392,7 @@ async function main() {
     intermediateToken: intermediate, buyRouter: buy, sellRouter: sell,
     minIntermediateOut: freshMinIntermediateOut,
     minFinalOut: freshMinFinalOut, buyFee, sellFee, buyTickSpacing, sellTickSpacing,
-    gasReserveInAsset: 1n, minProfit: price.minimumWethWei, deadline
+    gasReserveInAsset: 1n, minProfit: effectiveMinimumProfitWeth, deadline
   };
   const hasV4Leg = buyVenue.type === "v4" || sellVenue.type === "v4";
   const hasV3Leg = buyVenue.type === "v3" || sellVenue.type === "v3";
@@ -431,7 +469,8 @@ async function main() {
     mode: LIVE ? "LIVE — only if explicitly enabled" : "SIMULATION ONLY",
     candidate: { amount: c.amountIn, intermediate: c.intermediate, buy: c.buyVenue, sell: c.sellVenue, quoteBlock },
     minimumNetProfitUsd: `${(minProfitUsdCents / 100n).toString()}.${(minProfitUsdCents % 100n).toString().padStart(2, "0")}`,
-    minimumNetProfitWeth: ethers.formatEther(price.minimumWethWei),
+    minimumNetProfitWeth: ethers.formatEther(effectiveMinimumProfitWeth),
+    discoveredTokenApprovalBufferedCostWeth: ethers.formatEther(discoveredApprovalCostWeth),
     ethUsdAnswer: price.ethUsdAnswer,
     ethUsdFeedUpdatedAt: price.updatedAt,
     aaveFlashLoanPremiumBps: flashPremiumBps.toString(),
