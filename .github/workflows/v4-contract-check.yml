@@ -35,5 +35,7 @@ jobs:
       - name: Check JavaScript syntax
         run: node --check token-security.js && node --check new-token-discovery.js && node --check scanner.js && node --check executor.js && node --check bot.js
       - uses: foundry-rs/foundry-toolchain@v1
-      - name: Compile all Solidity contracts
+      - name: Install forge-std for deployment script compilation
+        run: git clone --depth 1 https://github.com/foundry-rs/forge-std lib/forge-std
+      - name: Compile all Solidity contracts and deployment scripts
         run: forge build --sizes --skip test
